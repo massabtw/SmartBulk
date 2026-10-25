@@ -200,6 +200,75 @@ public class CafeteriaMenuEndpointIntegrationTests : IClassFixture<WebApplicatio
     }
 
     [Fact]
+    public async Task ConfirmWeek_WhenAllItemsResolved_ReturnsOk200()
+    {
+        var monday = new DateOnly(2026, 10, 26);
+        var menuUuid = Guid.NewGuid();
+        var client = _factory.WithWebHostBuilder(builder =>
+        {
+            builder.ConfigureTestServices(services =>
+            {
+                var uowMock = new Mock<IUnitOfWorkApp>();
+                var menuRepoMock = new Mock<ICafeteriaMenuRepository>();
+
+                var menuEntity = new CafeteriaMenuEntity
+                {
+                    Id = 1,
+                    Uuid = menuUuid,
+                    WeekStartDate = monday,
+                    Status = "Draft",
+                    Meals = new List<CafeteriaMealEntity>
+                    {
+                        new()
+                        {
+                            Id = 10,
+                            Uuid = Guid.NewGuid(),
+                            Date = monday,
+                            MealType = "Lunch",
+                            Items = new List<CafeteriaMealItemEntity>
+                            {
+                                new()
+                                {
+                                    Id = 100,
+                                    Uuid = Guid.NewGuid(),
+                                    RawName = "Arroz",
+                                    ServingGrams = 100m,
+                                    IsPending = false,
+                                    Food = new FoodEntity { Id = 1, Calories = 130m, Protein = 2.5m }
+                                }
+                            }
+                        }
+                    }
+                };
+
+                menuRepoMock.Setup(m => m.GetByWeekStartDateAsync(monday, It.IsAny<CancellationToken>()))
+                    .ReturnsAsync(menuEntity);
+                menuRepoMock.SetupSequence(m => m.GetByUuidAsync(menuUuid, It.IsAny<CancellationToken>()))
+                    .ReturnsAsync(menuEntity)
+                    .ReturnsAsync(new CafeteriaMenuEntity
+                    {
+                        Id = 1,
+                        Uuid = menuUuid,
+                        WeekStartDate = monday,
+                        Status = "Confirmed"
+                    });
+
+                menuRepoMock.Setup(m => m.UpdateStatusAsync(1, "Confirmed", It.IsAny<CancellationToken>()))
+                    .ReturnsAsync(true);
+
+                uowMock.Setup(u => u.CafeteriaMenu).Returns(menuRepoMock.Object);
+                services.AddTransient(_ => uowMock.Object);
+            });
+        }).CreateClient();
+
+        client.DefaultRequestHeaders.Add("X-Api-Key", ValidApiKey);
+
+        var response = await client.PostAsync($"/api/cafeteriamenu/confirm-week?weekStartDate={monday:yyyy-MM-dd}", null);
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+    }
+
+    [Fact]
     public async Task UpdateAddAndDeleteItem_WhenConfirmed_ReturnsBadRequest400_AndWhenReopened_Succeeds()
     {
         var mealUuid = Guid.NewGuid();

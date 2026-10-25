@@ -83,6 +83,16 @@ public class CafeteriaMenuController : ControllerBase
         return result.Ok();
     }
 
+    [HttpPost("confirm-week")]
+    public async Task<IActionResult> ConfirmWeek(
+        [FromServices] ICafeteriaMenuService service,
+        [FromQuery] DateOnly? weekStartDate,
+        CancellationToken cancellationToken)
+    {
+        var result = await service.ConfirmWeekAsync(weekStartDate, cancellationToken);
+        return result.Ok();
+    }
+
     [HttpPost("{uuid}/reopen")]
     public async Task<IActionResult> Reopen(
         [FromServices] ICafeteriaMenuService service,

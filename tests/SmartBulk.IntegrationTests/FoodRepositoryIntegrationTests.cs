@@ -53,6 +53,10 @@ public class FoodRepositoryIntegrationTests
         fetched.IsCustom.Should().BeTrue();
         fetched.IsFavorite.Should().BeTrue();
 
+        var fetchedByName = await repo.GetByNameAsync("Vitamina de Abacate Caseira");
+        fetchedByName.Should().NotBeNull();
+        fetchedByName!.Uuid.Should().Be(customFood.Uuid);
+
         // Update favorite via SetFavoriteAsync
         var favUpdated = await repo.SetFavoriteAsync(customFood.Uuid, false);
         favUpdated.Should().BeTrue();

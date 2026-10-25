@@ -4,6 +4,7 @@ public class CafeteriaDailyGuaranteedModel
 {
     public DateOnly Date { get; set; }
     public bool HasCafeteria { get; set; }
+    public bool IncludeDinner { get; set; } = true;
     public bool HasConfirmedMenu { get; set; }
     public decimal Calories { get; set; }
     public decimal Protein { get; set; }

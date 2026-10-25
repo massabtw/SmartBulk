@@ -1,9 +1,11 @@
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using SmartBulk.Domain.Http.Llm;
+using SmartBulk.Domain.Http.OpenFoodFacts;
 using SmartBulk.Domain.Http.Telegram;
 using SmartBulk.Domain.UnitOfWorks;
 using SmartBulk.Infrastructure.Http.Llm;
+using SmartBulk.Infrastructure.Http.OpenFoodFacts;
 using SmartBulk.Infrastructure.Http.Telegram;
 using SmartBulk.Infrastructure.UnitOfWorks;
 
@@ -17,8 +19,15 @@ public static class IoC
 
         services.AddLlm(configuration);
         services.AddTelegram(configuration);
+        services.AddOpenFoodFacts(configuration);
 
         return services;
+    }
+
+    private static void AddOpenFoodFacts(this IServiceCollection services, IConfiguration configuration)
+    {
+        services.ConfigureOptions<OpenFoodFactsConfigureOptions>();
+        services.AddHttpClient<IFoodExternalProvider, OpenFoodFactsClient>();
     }
 
     private static void AddLlm(this IServiceCollection services, IConfiguration configuration)

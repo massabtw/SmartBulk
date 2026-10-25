@@ -7,6 +7,7 @@ public interface IFoodService
 {
     Task<Result<PagedResultModel<FoodModel>>> SearchAsync(FoodQueryModel query, CancellationToken cancellationToken = default);
     Task<Result<FoodModel>> GetByUuidAsync(Guid uuid, CancellationToken cancellationToken = default);
+    Task<Result<FoodModel>> ResolveFoodByNameAsync(string rawName, CancellationToken cancellationToken = default);
     Task<Result<FoodModel>> CreateCustomAsync(FoodModel model, CancellationToken cancellationToken = default);
     Task<Result<FoodModel>> UpdateCustomAsync(Guid uuid, FoodModel model, CancellationToken cancellationToken = default);
     Task<Result> DeleteCustomAsync(Guid uuid, CancellationToken cancellationToken = default);

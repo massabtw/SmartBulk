@@ -25,6 +25,7 @@
   <ItemGroup>
     <ProjectReference Include="..\..\src\SmartBulk.Domain\SmartBulk.Domain.csproj" />
     <ProjectReference Include="..\..\src\SmartBulk.Application\SmartBulk.Application.csproj" />
+    <ProjectReference Include="..\..\src\SmartBulk.Infrastructure\SmartBulk.Infrastructure.csproj" />
   </ItemGroup>
 
 </Project>

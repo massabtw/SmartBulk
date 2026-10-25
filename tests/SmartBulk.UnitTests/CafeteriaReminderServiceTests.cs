@@ -196,6 +196,67 @@ public class CafeteriaReminderServiceTests
     }
 
     [Fact]
+    public async Task CheckAndSendRemindersAsync_WhenDinnerTime_SendsReminderWithDinnerReducedPortionAndNo1_25xButton()
+    {
+        _tracker.Reset();
+
+        // 19:35 local -> 22:35 UTC
+        var currentTime = new DateTimeOffset(2026, 10, 26, 22, 35, 0, TimeSpan.Zero);
+        var today = new DateOnly(2026, 10, 26);
+        var dinnerUuid = Guid.NewGuid();
+
+        _cafeteriaServiceMock.Setup(c => c.GetDailyGuaranteedAsync(today, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new CafeteriaDailyGuaranteedModel
+            {
+                Date = today,
+                HasCafeteria = true,
+                HasConfirmedMenu = true,
+                Meals = new List<CafeteriaMealGuaranteedModel>
+                {
+                    new() { MealUuid = dinnerUuid, MealType = "Dinner" }
+                }
+            });
+
+        var dinnerEntity = new CafeteriaMealEntity
+        {
+            Id = 2,
+            Uuid = dinnerUuid,
+            Date = today,
+            MealType = "Dinner",
+            Items = new List<CafeteriaMealItemEntity>
+            {
+                new()
+                {
+                    Id = 20,
+                    RawName = "Carne moída",
+                    ServingGrams = 120,
+                    Food = new FoodEntity { Name = "Carne moída", Calories = 200, Protein = 22 }
+                }
+            }
+        };
+
+        _menuRepoMock.Setup(m => m.GetMealByUuidAsync(dinnerUuid, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(dinnerEntity);
+
+        var service = CreateService();
+        await service.CheckAndSendRemindersAsync(currentTime);
+
+        _telegramClientMock.Verify(t => t.SendMessageAsync(
+            123456789,
+            It.Is<string>(msg => msg.Contains("Hora do Jantar") && msg.Contains("Carne moída")),
+            It.Is<TelegramInlineKeyboardMarkupModel>(k =>
+                k.InlineKeyboard.Count == 2 &&
+                k.InlineKeyboard[0].Count == 2 &&
+                k.InlineKeyboard[1].Count == 1 &&
+                k.InlineKeyboard[0][0].Text.Contains("Padrão reduzido (0.75x)") &&
+                k.InlineKeyboard[0][1].Text.Contains("Porção inteira (1.0x)") &&
+                k.InlineKeyboard[1][0].Text.Contains("Hoje não janto lá (0.0x)") &&
+                !k.InlineKeyboard.Any(row => row.Any(btn => btn.Text.Contains("1.25x")))),
+            "Markdown",
+            It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [Fact]
     public async Task ProcessPlateProfileCallbackAsync_UpdatesProfileAndReturnsNewGap()
     {
         var mealUuid = Guid.NewGuid();

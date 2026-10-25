@@ -1,7 +1,7 @@
 "use client";
 
-import { useState } from "react";
-import { AlertCircle, Trash2, Edit2, Check, X, Replace } from "lucide-react";
+import { useEffect, useState } from "react";
+import { AlertCircle, Trash2, Edit2, Check, X, Replace, Moon } from "lucide-react";
 import { Card } from "@/components/Card";
 import { PlateProfileSelector } from "@/components/PlateProfileSelector";
 import { FoodSearchPicker } from "@/components/FoodSearchPicker";
@@ -15,24 +15,65 @@ interface MealReviewCardProps {
   onItemUpdated?: () => void;
 }
 
-function multiplierFor(profile?: string) {
-  const p = profile?.toLowerCase();
-  if (p === "good") return 1.25;
-  if (p === "poor") return 0.75;
-  return 1.0;
+function multiplierFor(profile?: string, mealType?: string) {
+  const p = profile?.toLowerCase() ?? "";
+  if (p === "none" || p === "skip" || p.includes("não") || p.includes("nao")) return 0.0;
+  if (p === "good" || p === "generous" || p.includes("bom")) return 1.25;
+  if (p === "poor" || p === "small" || p.includes("ruim") || p.includes("reduzid")) return 0.75;
+  if (p === "standard" || p.includes("padrão") || p.includes("padrao")) return 1.0;
+  return mealType?.toLowerCase() === "dinner" ? 0.75 : 1.0;
 }
 
 export function MealReviewCard({ meal, readOnly = false, onItemUpdated }: MealReviewCardProps) {
+  const isDinner = meal.mealType?.toLowerCase() === "dinner";
   const [editingItemUuid, setEditingItemUuid] = useState<string | null>(null);
   const [swappingItemUuid, setSwappingItemUuid] = useState<string | null>(null);
   const [editGrams, setEditGrams] = useState<string>("");
-  const [multiplier, setMultiplier] = useState<number>(() => multiplierFor(meal.plateProfile));
+  const [activeProfile, setActiveProfile] = useState<string>(
+    () => meal.plateProfile || (isDinner ? "Small" : "Standard")
+  );
+  const [multiplier, setMultiplier] = useState<number>(() =>
+    multiplierFor(meal.plateProfile, meal.mealType)
+  );
   const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    const nextProf = meal.plateProfile || (isDinner ? "Small" : "Standard");
+    setActiveProfile(nextProf);
+    setMultiplier(multiplierFor(nextProf, meal.mealType));
+  }, [meal.plateProfile, meal.mealType, isDinner]);
+
+  const isSkipped = multiplier === 0;
 
   const items = meal.items ?? [];
   const baseCalories = items.reduce((acc, i) => acc + (i.calories || 0), 0);
   const baseProtein = items.reduce((acc, i) => acc + (i.protein || 0), 0);
   const pendingCount = items.filter((i) => i.isPending).length;
+
+  const handleQuickDinnerToggle = async () => {
+    const nextProfile = isSkipped ? "Small" : "None";
+    const nextMult = isSkipped ? 0.75 : 0.0;
+    const prevProfile = activeProfile;
+    const prevMult = multiplier;
+
+    setActiveProfile(nextProfile);
+    setMultiplier(nextMult);
+    setError(null);
+
+    const res = await bffSend<unknown>("PUT", "cafeteriamenu/meals/profile", {
+      date: meal.date,
+      mealType: meal.mealType,
+      plateProfile: nextProfile,
+    });
+
+    if (res.error) {
+      setActiveProfile(prevProfile);
+      setMultiplier(prevMult);
+      setError(res.error);
+    } else {
+      onItemUpdated?.();
+    }
+  };
 
   const updateItem = async (item: CafeteriaMealItemModel, body: Record<string, unknown>) => {
     setError(null);
@@ -53,7 +94,6 @@ export function MealReviewCard({ meal, readOnly = false, onItemUpdated }: MealRe
     }
     const ok = await updateItem(item, {
       servingGrams: parsed,
-      // Mantém o alimento já associado, se houver.
       foodUuid: item.foodUuid ?? undefined,
     });
     if (ok) setEditingItemUuid(null);
@@ -75,13 +115,19 @@ export function MealReviewCard({ meal, readOnly = false, onItemUpdated }: MealRe
   };
 
   return (
-    <Card className="space-y-3 p-4 bg-zinc-900 border-zinc-800">
+    <Card className={`space-y-3 p-4 transition-all ${isSkipped ? "bg-zinc-950/70 border-zinc-800/60 opacity-80" : "bg-zinc-900 border-zinc-800"}`}>
       <div className="flex items-center justify-between">
         <div>
           <div className="flex items-center gap-2">
-            <h3 className="text-sm font-bold text-zinc-100">
-              {meal.mealType === "Lunch" ? "Almoço" : "Jantar"}
+            <h3 className="text-sm font-bold text-zinc-100 flex items-center gap-1.5">
+              {isDinner ? <Moon size={14} className="text-indigo-400" /> : null}
+              {isDinner ? "Jantar" : "Almoço"}
             </h3>
+            {isDinner && (
+              <span className="px-1.5 py-0.2 rounded text-[10px] font-semibold bg-indigo-500/15 text-indigo-300 border border-indigo-500/30">
+                Padrão 0.75x
+              </span>
+            )}
             {pendingCount > 0 && (
               <span className="px-1.5 py-0.5 rounded text-[10px] font-semibold bg-amber-500/15 text-amber-400 border border-amber-500/30 flex items-center gap-1">
                 <AlertCircle size={11} />
@@ -91,23 +137,60 @@ export function MealReviewCard({ meal, readOnly = false, onItemUpdated }: MealRe
           </div>
           <p className="text-[11px] text-zinc-400 mt-0.5">
             Estimativa ({multiplier.toFixed(2)}x):{" "}
-            <span className="text-amber-400 font-semibold">{Math.round(baseCalories * multiplier)} kcal</span>
+            <span className={isSkipped ? "text-zinc-500 line-through" : "text-amber-400 font-semibold"}>
+              {Math.round(baseCalories * multiplier)} kcal
+            </span>
             {" • "}
-            <span className="text-sky-400 font-semibold">{Math.round(baseProtein * multiplier)}g proteína</span>
+            <span className={isSkipped ? "text-zinc-500 line-through" : "text-sky-400 font-semibold"}>
+              {Math.round(baseProtein * multiplier)}g proteína
+            </span>
           </p>
         </div>
-        <span className="text-xs text-zinc-500">{items.length} itens</span>
+
+        <div className="flex items-center gap-2">
+          {isDinner && (
+            <button
+              type="button"
+              onClick={handleQuickDinnerToggle}
+              className={`px-2.5 py-1 rounded-xl text-xs font-semibold transition-all flex items-center gap-1 shadow-sm ${
+                isSkipped
+                  ? "bg-rose-950/40 border border-rose-500/40 text-rose-300 hover:bg-rose-900/50"
+                  : "bg-zinc-800 border border-zinc-700/80 text-zinc-300 hover:bg-zinc-700 hover:text-white"
+              }`}
+            >
+              {isSkipped ? "Hoje não jantei lá (0.0x)" : "Não vou jantar lá"}
+            </button>
+          )}
+          <span className="text-xs text-zinc-500">{items.length} itens</span>
+        </div>
       </div>
+
+      {isSkipped && (
+        <div className="p-2.5 rounded-xl bg-rose-950/20 border border-rose-500/30 text-rose-300 text-xs flex items-center justify-between gap-2">
+          <span>Refeição pulada: calorias e proteínas voltam integralmente para o seu Gap do dia.</span>
+          <button
+            type="button"
+            onClick={handleQuickDinnerToggle}
+            className="underline text-[11px] text-rose-400 hover:text-rose-200 shrink-0 font-medium"
+          >
+            Reativar
+          </button>
+        </div>
+      )}
 
       <div className="space-y-1">
         <span className="text-[10px] font-semibold text-zinc-500 uppercase tracking-wider">
           Perfil do prato
         </span>
         <PlateProfileSelector
-          currentProfile={meal.plateProfile || "Standard"}
+          currentProfile={activeProfile}
           date={meal.date}
           mealType={meal.mealType}
-          onProfileChanged={(_, mult) => setMultiplier(mult)}
+          onProfileChanged={(prof, mult) => {
+            setActiveProfile(prof);
+            setMultiplier(mult);
+            onItemUpdated?.();
+          }}
         />
       </div>
 
@@ -164,19 +247,19 @@ export function MealReviewCard({ meal, readOnly = false, onItemUpdated }: MealRe
                             if (e.key === "Enter") handleSaveGrams(item);
                             if (e.key === "Escape") setEditingItemUuid(null);
                           }}
-                          className="w-16 bg-zinc-900 border border-brand-500 rounded px-1.5 py-0.5 text-xs text-zinc-100 text-center"
+                          className="w-16 px-1.5 py-0.5 bg-zinc-900 border border-zinc-700 rounded text-center text-xs text-zinc-100"
                         />
                         <button
                           onClick={() => handleSaveGrams(item)}
-                          aria-label="Salvar gramas"
-                          className="p-1 text-emerald-400 hover:bg-emerald-500/20 rounded"
+                          className="p-1 text-emerald-400 hover:text-emerald-300"
+                          title="Salvar"
                         >
                           <Check size={14} />
                         </button>
                         <button
                           onClick={() => setEditingItemUuid(null)}
-                          aria-label="Cancelar"
-                          className="p-1 text-zinc-500 hover:bg-zinc-800 rounded"
+                          className="p-1 text-zinc-400 hover:text-zinc-300"
+                          title="Cancelar"
                         >
                           <X size={14} />
                         </button>
@@ -185,36 +268,25 @@ export function MealReviewCard({ meal, readOnly = false, onItemUpdated }: MealRe
                       <>
                         <button
                           onClick={() => {
-                            setEditGrams(String(Math.round(item.servingGrams)));
                             setEditingItemUuid(item.uuid);
-                            setSwappingItemUuid(null);
+                            setEditGrams(String(Math.round(item.servingGrams)));
                           }}
-                          className="p-1 text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800 rounded transition-colors"
+                          className="p-1 text-zinc-400 hover:text-zinc-200"
                           title="Editar gramas"
-                          aria-label="Editar gramas"
                         >
                           <Edit2 size={13} />
                         </button>
                         <button
-                          onClick={() => {
-                            setSwappingItemUuid(isSwapping ? null : item.uuid);
-                            setEditingItemUuid(null);
-                          }}
-                          className={`p-1 rounded transition-colors ${
-                            item.isPending
-                              ? "text-amber-300 bg-amber-500/15 hover:bg-amber-500/25"
-                              : "text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800"
-                          }`}
-                          title={item.isPending ? "Associar alimento" : "Trocar alimento"}
-                          aria-label={item.isPending ? "Associar alimento" : "Trocar alimento"}
+                          onClick={() => setSwappingItemUuid(item.uuid)}
+                          className="p-1 text-zinc-400 hover:text-zinc-200"
+                          title="Trocar alimento"
                         >
                           <Replace size={13} />
                         </button>
                         <button
                           onClick={() => handleDeleteItem(item.uuid)}
-                          className="p-1 text-zinc-500 hover:text-rose-400 hover:bg-rose-500/10 rounded transition-colors"
-                          title="Excluir item"
-                          aria-label="Excluir item"
+                          className="p-1 text-zinc-400 hover:text-rose-400"
+                          title="Remover"
                         >
                           <Trash2 size={13} />
                         </button>
@@ -224,13 +296,20 @@ export function MealReviewCard({ meal, readOnly = false, onItemUpdated }: MealRe
                 )}
               </div>
 
-              {isSwapping && !readOnly && (
+              {isSwapping && (
                 <div className="mt-2 pt-2 border-t border-zinc-800">
-                  <FoodSearchPicker
-                    autoFocus
-                    placeholder={`Alimento para "${item.rawName}"`}
-                    onPick={(food) => handleSwapFood(item, food)}
-                  />
+                  <div className="flex items-center justify-between mb-1.5">
+                    <span className="text-[10px] font-semibold text-zinc-400">
+                      Selecione o alimento correspondente:
+                    </span>
+                    <button
+                      onClick={() => setSwappingItemUuid(null)}
+                      className="text-[10px] text-zinc-500 hover:text-zinc-300"
+                    >
+                      Fechar
+                    </button>
+                  </div>
+                  <FoodSearchPicker onPick={(food) => handleSwapFood(item, food)} />
                 </div>
               )}
             </li>

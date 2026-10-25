@@ -26,12 +26,17 @@ public static class CafeteriaMenuModelMap
         if (entity is null)
             return null;
 
+        var isDinner = string.Equals(entity.MealType, "Dinner", StringComparison.OrdinalIgnoreCase);
+        var effectiveProfile = string.IsNullOrWhiteSpace(entity.PlateProfile)
+            ? (isDinner ? "Small" : "Standard")
+            : entity.PlateProfile;
+
         return new CafeteriaMealModel
         {
             Uuid = entity.Uuid,
             Date = entity.Date,
             MealType = entity.MealType,
-            PlateProfile = entity.PlateProfile,
+            PlateProfile = effectiveProfile,
             Items = entity.Items?.Select(i => i.ToModel()!).Where(i => i != null).ToList() ?? new List<CafeteriaMealItemModel>()
         };
     }
@@ -81,13 +86,14 @@ public static class CafeteriaMenuModelMap
 
     public static CafeteriaMealEntity ToEntity(this CafeteriaLlmMealExtractionModel model, int menuId, DateOnly mealDate, string normalizedMealType)
     {
+        var isDinner = string.Equals(normalizedMealType, "Dinner", StringComparison.OrdinalIgnoreCase);
         return new CafeteriaMealEntity
         {
             Uuid = Guid.NewGuid(),
             CafeteriaMenuId = menuId,
             Date = mealDate,
             MealType = normalizedMealType,
-            PlateProfile = "Standard"
+            PlateProfile = isDinner ? "Small" : "Standard"
         };
     }
 
@@ -119,9 +125,15 @@ public static class CafeteriaMenuModelMap
         };
     }
 
-    public static CafeteriaMealGuaranteedModel ToGuaranteedModel(this CafeteriaMealEntity meal)
+    public static CafeteriaMealGuaranteedModel ToGuaranteedModel(this CafeteriaMealEntity meal, bool forceSkipDinner = false)
     {
-        var profile = PlateProfileExtensions.ParseOrDefault(meal.PlateProfile);
+        var isDinner = string.Equals(meal.MealType, "Dinner", StringComparison.OrdinalIgnoreCase);
+        var profile = (isDinner && forceSkipDinner)
+            ? PlateProfile.None
+            : string.IsNullOrWhiteSpace(meal.PlateProfile)
+                ? (isDinner ? PlateProfile.Small : PlateProfile.Standard)
+                : PlateProfileExtensions.ParseOrDefault(meal.PlateProfile);
+
         var multiplier = profile.GetMultiplier();
 
         var baseMealNutrition = NutritionalValue.Zero;
@@ -157,7 +169,8 @@ public static class CafeteriaMenuModelMap
         this DateOnly date,
         bool hasCafeteria,
         bool hasConfirmedMenu,
-        IEnumerable<CafeteriaMealEntity>? dailyMeals = null)
+        IEnumerable<CafeteriaMealEntity>? dailyMeals = null,
+        bool includeDinner = true)
     {
         if (!hasCafeteria || !hasConfirmedMenu || dailyMeals is null)
         {
@@ -165,6 +178,7 @@ public static class CafeteriaMenuModelMap
             {
                 Date = date,
                 HasCafeteria = hasCafeteria,
+                IncludeDinner = hasCafeteria && includeDinner,
                 HasConfirmedMenu = hasConfirmedMenu,
                 Calories = 0,
                 Protein = 0,
@@ -174,12 +188,15 @@ public static class CafeteriaMenuModelMap
             };
         }
 
-        var guaranteedMeals = dailyMeals.Select(m => m.ToGuaranteedModel()).ToList();
+        var guaranteedMeals = dailyMeals.Select(m => m.ToGuaranteedModel(forceSkipDinner: !includeDinner)).ToList();
+        var dinnerSkippedInMeal = guaranteedMeals.Any(m =>
+            string.Equals(m.MealType, "Dinner", StringComparison.OrdinalIgnoreCase) && m.Multiplier == 0m);
 
         return new CafeteriaDailyGuaranteedModel
         {
             Date = date,
             HasCafeteria = true,
+            IncludeDinner = includeDinner && !dinnerSkippedInMeal,
             HasConfirmedMenu = true,
             Calories = Math.Round(guaranteedMeals.Sum(m => m.Calories), 2),
             Protein = Math.Round(guaranteedMeals.Sum(m => m.Protein), 2),

@@ -1,5 +1,6 @@
 using SmartBulk.Application.Models;
 using SmartBulk.Domain.Entities;
+using SmartBulk.Domain.Http.OpenFoodFacts.Models;
 
 namespace SmartBulk.Application.Mappers;
 
@@ -40,6 +41,37 @@ public static class FoodModelMap
             IsCustom = model.IsCustom,
             IsFavorite = model.IsFavorite,
             RawYieldFactor = model.RawYieldFactor
+        };
+    }
+
+    public static FoodEntity? ToEntity(this ExternalFoodModel? model)
+    {
+        if (model is null)
+            return null;
+
+        var displayName = string.IsNullOrWhiteSpace(model.Brand)
+            ? model.Name.Trim()
+            : $"{model.Name.Trim()} ({model.Brand.Trim()})";
+
+        if (displayName.Length > 200)
+        {
+            displayName = displayName.Substring(0, 200);
+        }
+
+        return new FoodEntity
+        {
+            Uuid = Guid.NewGuid(),
+            Name = displayName,
+            Calories = model.Calories,
+            Protein = model.Protein,
+            Carbohydrates = model.Carbohydrates,
+            Fat = model.Fat,
+            IsCustom = true,
+            IsFavorite = false,
+            RawYieldFactor = null,
+            CreatedAt = DateTimeOffset.UtcNow,
+            UpdatedAt = DateTimeOffset.UtcNow,
+            Deleted = false
         };
     }
 

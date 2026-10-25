@@ -182,22 +182,40 @@ public class CafeteriaReminderService : ICafeteriaReminderService
                           $"_({(int)standardCalories} kcal | {(int)standardProtein}g proteína)_\n\n" +
                           $"Como foi o seu prato?";
 
-        var keyboard = new TelegramInlineKeyboardMarkupModel
-        {
-            InlineKeyboard = new List<List<TelegramInlineKeyboardButtonModel>>
+        var isDinner = string.Equals(mealDisplayName, "Jantar", StringComparison.OrdinalIgnoreCase);
+
+        var keyboard = isDinner
+            ? new TelegramInlineKeyboardMarkupModel
             {
-                new()
+                InlineKeyboard = new List<List<TelegramInlineKeyboardButtonModel>>
                 {
-                    new() { Text = "Padrão (1.0x)", CallbackData = $"plate:{mealUuid}:Standard" },
-                    new() { Text = "Prato bom (1.25x)", CallbackData = $"plate:{mealUuid}:Generous" }
-                },
-                new()
-                {
-                    new() { Text = "Prato ruim (0.75x)", CallbackData = $"plate:{mealUuid}:Small" },
-                    new() { Text = "Não comi (0.0x)", CallbackData = $"plate:{mealUuid}:None" }
+                    new()
+                    {
+                        new() { Text = "Padrão reduzido (0.75x)", CallbackData = $"plate:{mealUuid}:Small" },
+                        new() { Text = "Porção inteira (1.0x)", CallbackData = $"plate:{mealUuid}:Standard" }
+                    },
+                    new()
+                    {
+                        new() { Text = "Hoje não janto lá (0.0x)", CallbackData = $"plate:{mealUuid}:None" }
+                    }
                 }
             }
-        };
+            : new TelegramInlineKeyboardMarkupModel
+            {
+                InlineKeyboard = new List<List<TelegramInlineKeyboardButtonModel>>
+                {
+                    new()
+                    {
+                        new() { Text = "Padrão (1.0x)", CallbackData = $"plate:{mealUuid}:Standard" },
+                        new() { Text = "Prato bom (1.25x)", CallbackData = $"plate:{mealUuid}:Generous" }
+                    },
+                    new()
+                    {
+                        new() { Text = "Prato ruim (0.75x)", CallbackData = $"plate:{mealUuid}:Small" },
+                        new() { Text = "Não comi (0.0x)", CallbackData = $"plate:{mealUuid}:None" }
+                    }
+                }
+            };
 
         await _telegramClient.SendMessageAsync(
             _telegramOptions.ChatId,

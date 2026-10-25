@@ -89,18 +89,63 @@ public class CafeteriaMenuService : ICafeteriaMenuService
             _unitOfWork.BeginTransaction();
             transactionStarted = true;
 
+            var existingMenu = await _unitOfWork.CafeteriaMenu.GetByWeekStartDateAsync(weekStart, cancellationToken);
+            if (existingMenu != null)
+            {
+                await _unitOfWork.CafeteriaMenu.DeleteMenuAsync(existingMenu.Uuid, cancellationToken);
+            }
+
             var menuEntity = weekStart.ToEntity("Draft");
             var menuId = await _unitOfWork.CafeteriaMenu.CreateMenuAsync(menuEntity, cancellationToken);
             menuEntity.Id = menuId;
 
-            foreach (var extractedMeal in extraction.Data.Meals)
+            var extractedMeals = extraction.Data.Meals.ToList();
+            var isWeeklyBatch = !string.IsNullOrWhiteSpace(model.ImageBase64) ||
+                                extractedMeals.Select(m => m.Date).Distinct().Count() >= 2;
+
+            if (isWeeklyBatch)
+            {
+                var datesWithLunchOnly = extractedMeals
+                    .GroupBy(m => m.Date)
+                    .Where(g => g.Any(m => NormalizeMealType(m.MealType) == "Lunch") &&
+                                !g.Any(m => NormalizeMealType(m.MealType) == "Dinner"))
+                    .Select(g => g.First(m => NormalizeMealType(m.MealType) == "Lunch"))
+                    .ToList();
+
+                foreach (var lunch in datesWithLunchOnly)
+                {
+                    extractedMeals.Add(new CafeteriaLlmMealExtractionModel
+                    {
+                        Date = lunch.Date,
+                        MealType = "Dinner",
+                        Items = lunch.Items.Select(i => new CafeteriaLlmItemExtractionModel
+                        {
+                            Name = i.Name,
+                            Grams = i.Grams
+                        }).ToList()
+                    });
+                }
+            }
+
+            foreach (var extractedMeal in extractedMeals)
             {
                 if (!DateOnly.TryParse(extractedMeal.Date, out var mealDate))
                 {
                     mealDate = weekStart;
                 }
 
-                var mealEntity = extractedMeal.ToEntity(menuId, mealDate, NormalizeMealType(extractedMeal.MealType));
+                var normalizedMealType = NormalizeMealType(extractedMeal.MealType);
+                var mealEntity = extractedMeal.ToEntity(menuId, mealDate, normalizedMealType);
+
+                if (normalizedMealType == "Dinner")
+                {
+                    var dayOverride = await _unitOfWork.CafeteriaDayOverride.GetByDateAsync(mealDate, cancellationToken);
+                    if (dayOverride?.Reason != null && dayOverride.Reason.Contains("NoDinner", StringComparison.OrdinalIgnoreCase))
+                    {
+                        mealEntity.PlateProfile = "None";
+                    }
+                }
+
                 var mealId = await _unitOfWork.CafeteriaMenu.CreateMealAsync(mealEntity, cancellationToken);
                 mealEntity.Id = mealId;
 
@@ -327,6 +372,28 @@ public class CafeteriaMenuService : ICafeteriaMenuService
         }
     }
 
+    public async Task<Result<CafeteriaMenuModel>> ConfirmWeekAsync(DateOnly? weekStartDate = null, CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            var today = await TimeZoneDateHelper.GetUserTodayAsync(_unitOfWork, cancellationToken);
+            var monday = weekStartDate.HasValue ? GetWeekMonday(weekStartDate.Value) : GetWeekMonday(today);
+
+            var menu = await _unitOfWork.CafeteriaMenu.GetByWeekStartDateAsync(monday, cancellationToken);
+            if (menu is null)
+            {
+                return Result<CafeteriaMenuModel>.Fail("Nenhum cardápio encontrado para a semana selecionada.");
+            }
+
+            return await ConfirmMenuAsync(menu.Uuid, cancellationToken);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error confirming weekly cafeteria menu for week: {Week}", weekStartDate);
+            return ErrorMessages.UnknownError;
+        }
+    }
+
     public async Task<Result<CafeteriaMenuModel>> ReopenMenuAsync(Guid menuUuid, CancellationToken cancellationToken = default)
     {
         try
@@ -397,6 +464,26 @@ public class CafeteriaMenuService : ICafeteriaMenuService
             if (!updated)
                 return ErrorMessages.UnknownError;
 
+            if (normalizedType == "Dinner")
+            {
+                var existingOverride = await _unitOfWork.CafeteriaDayOverride.GetByDateAsync(model.Date, cancellationToken);
+                if (existingOverride != null)
+                {
+                    if (profile == PlateProfile.None && !(existingOverride.Reason?.Contains("NoDinner", StringComparison.OrdinalIgnoreCase) ?? false))
+                    {
+                        existingOverride.Reason = string.IsNullOrWhiteSpace(existingOverride.Reason)
+                            ? "NoDinner"
+                            : $"{existingOverride.Reason};NoDinner";
+                        await _unitOfWork.CafeteriaDayOverride.UpsertAsync(existingOverride, cancellationToken);
+                    }
+                    else if (profile != PlateProfile.None && string.Equals(existingOverride.Reason, "NoDinner", StringComparison.OrdinalIgnoreCase))
+                    {
+                        existingOverride.Reason = null;
+                        await _unitOfWork.CafeteriaDayOverride.UpsertAsync(existingOverride, cancellationToken);
+                    }
+                }
+            }
+
             meal.PlateProfile = profile.ToString();
             var reloaded = await _unitOfWork.CafeteriaMenu.GetMealByUuidAsync(meal.Uuid, cancellationToken);
             return (reloaded ?? meal).ToModel()!;
@@ -416,10 +503,19 @@ public class CafeteriaMenuService : ICafeteriaMenuService
                 ? await TimeZoneDateHelper.GetUserTodayAsync(_unitOfWork, cancellationToken)
                 : date.Value;
 
+            var dinnerMeal = await _unitOfWork.CafeteriaMenu.GetMealByDateAndTypeAsync(targetDate, "Dinner", cancellationToken);
+            var dinnerSkippedInMeal = dinnerMeal != null &&
+                                      PlateProfileExtensions.ParseOrDefault(dinnerMeal.PlateProfile) == PlateProfile.None;
+
             var entity = await _unitOfWork.CafeteriaDayOverride.GetByDateAsync(targetDate, cancellationToken);
             if (entity != null)
             {
-                return entity.ToModel()!;
+                var overrideModel = entity.ToModel()!;
+                if (dinnerSkippedInMeal)
+                {
+                    overrideModel.IncludeDinner = false;
+                }
+                return overrideModel;
             }
 
             var defaultHasCafeteria = targetDate.DayOfWeek != DayOfWeek.Saturday && targetDate.DayOfWeek != DayOfWeek.Sunday;
@@ -427,6 +523,7 @@ public class CafeteriaMenuService : ICafeteriaMenuService
             {
                 Date = targetDate,
                 HasCafeteria = defaultHasCafeteria,
+                IncludeDinner = defaultHasCafeteria && !dinnerSkippedInMeal,
                 Reason = null
             };
         }
@@ -449,6 +546,16 @@ public class CafeteriaMenuService : ICafeteriaMenuService
 
             var entity = model.ToEntity();
             await _unitOfWork.CafeteriaDayOverride.UpsertAsync(entity, cancellationToken);
+
+            if (model.IncludeDinner.HasValue)
+            {
+                var dinnerMeal = await _unitOfWork.CafeteriaMenu.GetMealByDateAndTypeAsync(model.Date, "Dinner", cancellationToken);
+                if (dinnerMeal != null)
+                {
+                    var nextProfile = model.IncludeDinner.Value ? "Small" : "None";
+                    await _unitOfWork.CafeteriaMenu.UpdateMealPlateProfileAsync(dinnerMeal.Id, nextProfile, cancellationToken);
+                }
+            }
 
             var saved = await _unitOfWork.CafeteriaDayOverride.GetByDateAsync(model.Date, cancellationToken);
             return saved?.ToModel() ?? entity.ToModel()!;
@@ -487,9 +594,12 @@ public class CafeteriaMenuService : ICafeteriaMenuService
                 ? dayOverride.HasCafeteria
                 : (targetDate.DayOfWeek != DayOfWeek.Saturday && targetDate.DayOfWeek != DayOfWeek.Sunday);
 
+            var includeDinner = hasCafeteria &&
+                                !(dayOverride?.Reason?.Contains("NoDinner", StringComparison.OrdinalIgnoreCase) ?? false);
+
             if (!hasCafeteria)
             {
-                return targetDate.ToDailyGuaranteedModel(hasCafeteria: false, hasConfirmedMenu: false);
+                return targetDate.ToDailyGuaranteedModel(hasCafeteria: false, hasConfirmedMenu: false, includeDinner: false);
             }
 
             var monday = GetWeekMonday(targetDate);
@@ -498,11 +608,11 @@ public class CafeteriaMenuService : ICafeteriaMenuService
 
             if (menu == null || !isConfirmed)
             {
-                return targetDate.ToDailyGuaranteedModel(hasCafeteria: true, hasConfirmedMenu: false);
+                return targetDate.ToDailyGuaranteedModel(hasCafeteria: true, hasConfirmedMenu: false, includeDinner: includeDinner);
             }
 
             var dailyMeals = menu.Meals.Where(m => m.Date == targetDate).ToList();
-            return targetDate.ToDailyGuaranteedModel(hasCafeteria: true, hasConfirmedMenu: true, dailyMeals);
+            return targetDate.ToDailyGuaranteedModel(hasCafeteria: true, hasConfirmedMenu: true, dailyMeals, includeDinner: includeDinner);
         }
         catch (Exception ex)
         {
@@ -543,9 +653,17 @@ public class CafeteriaMenuService : ICafeteriaMenuService
         DateOnly weekStart,
         CancellationToken cancellationToken)
     {
+        var monday = weekStart;
+        var tuesday = weekStart.AddDays(1);
+        var wednesday = weekStart.AddDays(2);
+        var thursday = weekStart.AddDays(3);
+        var friday = weekStart.AddDays(4);
+
         const string systemPrompt = @"Você é um especialista em nutrição esportiva.
-Analise o cardápio do refeitório corporativo para a semana (segunda a sexta-feira).
-Extraia as refeições (Lunch / Dinner) e decomponha os pratos em componentes simples com porção estimada em gramas.
+Sua tarefa é atuar EXCLUSIVAMENTE como um parser semântico do cardápio do refeitório corporativo para os 5 DIAS ÚTEIS da semana (Segunda a Sexta-feira).
+A partir de uma única imagem ou texto contendo a semana inteira, você DEVE extrair todos os 5 dias úteis (Segunda a Sexta), identificando o Almoço (Lunch) e o Jantar (Dinner) de cada dia.
+Decomponha os pratos de cada refeição em componentes com o nome limpo do alimento e a porção estimada em gramas.
+NÃO calcule e NÃO invente calorias ou macronutrientes: todo o cálculo nutricional é delegado integralmente aos catálogos do sistema (base TACO e Open Food Facts).
 Responda EXCLUSIVAMENTE em JSON no seguinte formato:
 {
   ""meals"": [
@@ -557,12 +675,27 @@ Responda EXCLUSIVAMENTE em JSON no seguinte formato:
         { ""name"": ""Feijão carioca cozido"", ""grams"": 100 },
         { ""name"": ""Peito de frango grelhado"", ""grams"": 150 }
       ]
+    },
+    {
+      ""date"": ""YYYY-MM-DD"",
+      ""mealType"": ""Dinner"",
+      ""items"": [
+        { ""name"": ""Arroz branco cozido"", ""grams"": 100 },
+        { ""name"": ""Carne moída refogada"", ""grams"": 120 }
+      ]
     }
   ]
 }";
 
-        var prompt = $"A semana inicia na segunda-feira {weekStart:yyyy-MM-dd}.\n" +
-                     (string.IsNullOrWhiteSpace(model.Text) ? "Identifique o cardápio a partir da imagem fornecida." : $"Cardápio:\n{model.Text}");
+        var prompt = $@"Extraia o cardápio completo dos 5 DIAS ÚTEIS da semana a partir da imagem/texto:
+- Segunda-feira: {monday:yyyy-MM-dd} (Lunch e Dinner)
+- Terça-feira: {tuesday:yyyy-MM-dd} (Lunch e Dinner)
+- Quarta-feira: {wednesday:yyyy-MM-dd} (Lunch e Dinner)
+- Quinta-feira: {thursday:yyyy-MM-dd} (Lunch e Dinner)
+- Sexta-feira: {friday:yyyy-MM-dd} (Lunch e Dinner)
+
+Mapeie cada dia e refeição da imagem/texto diretamente para sua data exata no array 'meals'.
+" + (string.IsNullOrWhiteSpace(model.Text) ? "Identifique o cardápio dos 5 dias úteis a partir da imagem fornecida." : $"Cardápio:\n{model.Text}");
 
         // Attempt 1
         var llmResult = await _llmClient.GenerateCompletionAsync(

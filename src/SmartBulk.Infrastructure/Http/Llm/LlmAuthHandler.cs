@@ -15,7 +15,7 @@ internal class LlmAuthHandler : DelegatingHandler
 
     protected override HttpResponseMessage Send(HttpRequestMessage request, CancellationToken cancellationToken)
     {
-        if (!string.IsNullOrWhiteSpace(_options.ApiKey))
+        if (request.Headers.Authorization == null && !string.IsNullOrWhiteSpace(_options.ApiKey))
         {
             request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", _options.ApiKey);
         }
@@ -25,7 +25,7 @@ internal class LlmAuthHandler : DelegatingHandler
 
     protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
     {
-        if (!string.IsNullOrWhiteSpace(_options.ApiKey))
+        if (request.Headers.Authorization == null && !string.IsNullOrWhiteSpace(_options.ApiKey))
         {
             request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", _options.ApiKey);
         }

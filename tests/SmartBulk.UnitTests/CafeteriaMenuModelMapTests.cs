@@ -1,6 +1,7 @@
 using FluentAssertions;
 using SmartBulk.Application.Mappers;
 using SmartBulk.Domain.Entities;
+using SmartBulk.Domain.Http.Llm.Models;
 using Xunit;
 
 namespace SmartBulk.UnitTests;
@@ -88,5 +89,65 @@ public class CafeteriaMenuModelMapTests
         model!.IsPending.Should().BeTrue();
         model.FoodUuid.Should().BeNull();
         model.Calories.Should().Be(0);
+    }
+
+    [Fact]
+    public void ToEntity_WhenExtractedMealIsDinner_DefaultsPlateProfileToSmall0_75x()
+    {
+        var extractedDinner = new CafeteriaLlmMealExtractionModel
+        {
+            Date = "2026-10-26",
+            MealType = "Dinner",
+            Items = new List<CafeteriaLlmItemExtractionModel>()
+        };
+
+        var entity = extractedDinner.ToEntity(1, new DateOnly(2026, 10, 26), "Dinner");
+
+        entity.MealType.Should().Be("Dinner");
+        entity.PlateProfile.Should().Be("Small");
+    }
+
+    [Fact]
+    public void ToEntity_WhenExtractedMealIsLunch_DefaultsPlateProfileToStandard1_0x()
+    {
+        var extractedLunch = new CafeteriaLlmMealExtractionModel
+        {
+            Date = "2026-10-26",
+            MealType = "Lunch",
+            Items = new List<CafeteriaLlmItemExtractionModel>()
+        };
+
+        var entity = extractedLunch.ToEntity(1, new DateOnly(2026, 10, 26), "Lunch");
+
+        entity.MealType.Should().Be("Lunch");
+        entity.PlateProfile.Should().Be("Standard");
+    }
+
+    [Fact]
+    public void ToGuaranteedModel_WhenDinnerSkippedNone_ReturnsZeroCaloriesAndProtein()
+    {
+        var dinner = new CafeteriaMealEntity
+        {
+            MealType = "Dinner",
+            PlateProfile = "None",
+            Items = new List<CafeteriaMealItemEntity>
+            {
+                new()
+                {
+                    ServingGrams = 100,
+                    Food = new FoodEntity
+                    {
+                        Calories = 200,
+                        Protein = 20
+                    }
+                }
+            }
+        };
+
+        var guaranteed = dinner.ToGuaranteedModel();
+
+        guaranteed.Multiplier.Should().Be(0.00m);
+        guaranteed.Calories.Should().Be(0);
+        guaranteed.Protein.Should().Be(0);
     }
 }

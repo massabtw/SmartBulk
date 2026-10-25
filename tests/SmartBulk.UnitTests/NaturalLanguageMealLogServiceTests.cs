@@ -22,6 +22,7 @@ public class NaturalLanguageMealLogServiceTests
     private readonly Mock<IFoodRepository> _foodRepoMock = new();
     private readonly Mock<ILlmClient> _llmClientMock = new();
     private readonly Mock<IMealLogService> _mealLogServiceMock = new();
+    private readonly Mock<IFoodService> _foodServiceMock = new();
     private readonly IValidator<NaturalLanguageMealLogRequestModel> _requestValidator = new NaturalLanguageMealLogRequestModelValidator();
     private readonly IValidator<NaturalLanguageMealLlmExtractionModel> _extractionValidator = new NaturalLanguageMealLlmExtractionModelValidator();
     private readonly Mock<ILogger<NaturalLanguageMealLogService>> _loggerMock = new();
@@ -31,17 +32,20 @@ public class NaturalLanguageMealLogServiceTests
         _uowMock.Setup(u => u.Food).Returns(_foodRepoMock.Object);
     }
 
-    [Fact]
-    public async Task Process_WhenRequestHasNoTextAndNoImage_FailsValidation()
-    {
-        var service = new NaturalLanguageMealLogService(
+    private NaturalLanguageMealLogService CreateService() =>
+        new(
             _uowMock.Object,
             _llmClientMock.Object,
             _mealLogServiceMock.Object,
+            _foodServiceMock.Object,
             _requestValidator,
             _extractionValidator,
             _loggerMock.Object);
 
+    [Fact]
+    public async Task Process_WhenRequestHasNoTextAndNoImage_FailsValidation()
+    {
+        var service = CreateService();
         var result = await service.ProcessNaturalLanguageMealAsync(new NaturalLanguageMealLogRequestModel());
 
         result.Success.Should().BeFalse();
@@ -61,14 +65,7 @@ public class NaturalLanguageMealLogServiceTests
                 It.IsAny<CancellationToken>()))
             .ReturnsAsync(Result<string>.Fail("Limite de taxa ou cota excedida na LLM (HTTP 429)."));
 
-        var service = new NaturalLanguageMealLogService(
-            _uowMock.Object,
-            _llmClientMock.Object,
-            _mealLogServiceMock.Object,
-            _requestValidator,
-            _extractionValidator,
-            _loggerMock.Object);
-
+        var service = CreateService();
         var result = await service.ProcessNaturalLanguageMealAsync(new NaturalLanguageMealLogRequestModel
         {
             Text = "comi 3 ovos e 2 pães"
@@ -124,14 +121,7 @@ public class NaturalLanguageMealLogServiceTests
         _mealLogServiceMock.Setup(m => m.GetDailyGapOverviewAsync(It.IsAny<DateOnly?>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(new DailyGapOverviewModel { CalorieGap = 1000, ProteinGap = 50 });
 
-        var service = new NaturalLanguageMealLogService(
-            _uowMock.Object,
-            _llmClientMock.Object,
-            _mealLogServiceMock.Object,
-            _requestValidator,
-            _extractionValidator,
-            _loggerMock.Object);
-
+        var service = CreateService();
         var result = await service.ProcessNaturalLanguageMealAsync(new NaturalLanguageMealLogRequestModel
         {
             Text = "comi 3 ovos cozidos"
@@ -163,19 +153,14 @@ public class NaturalLanguageMealLogServiceTests
                 It.IsAny<CancellationToken>()))
             .ReturnsAsync(Result<string>.Ok(validJson));
 
-        // Catalog only has normal foods
         var eggFood = new FoodEntity { Id = 1, Uuid = Guid.NewGuid(), Name = "Ovo cozido" };
         _foodRepoMock.Setup(f => f.SearchAsync(null, 1, 100, It.IsAny<CancellationToken>()))
             .ReturnsAsync(new List<FoodEntity> { eggFood });
 
-        var service = new NaturalLanguageMealLogService(
-            _uowMock.Object,
-            _llmClientMock.Object,
-            _mealLogServiceMock.Object,
-            _requestValidator,
-            _extractionValidator,
-            _loggerMock.Object);
+        _foodServiceMock.Setup(f => f.ResolveFoodByNameAsync("Fruta Exotica do Himalaia", It.IsAny<CancellationToken>()))
+            .ReturnsAsync(Result<FoodModel>.Fail("Não encontrado"));
 
+        var service = CreateService();
         var result = await service.ProcessNaturalLanguageMealAsync(new NaturalLanguageMealLogRequestModel
         {
             Text = "comi 200g de fruta exotica do himalaia"
@@ -189,6 +174,73 @@ public class NaturalLanguageMealLogServiceTests
         result.Data.MealLogUuid.Should().BeNull();
 
         _mealLogServiceMock.Verify(m => m.CreateMealLogAsync(It.IsAny<MealLogCreateModel>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task Process_WhenFoodNotFoundLocally_ResolvesViaOpenFoodFactsFallbackAndLogsMeal()
+    {
+        const string validJson = @"{
+            ""mealName"": ""Lanche Proteico"",
+            ""items"": [
+                { ""name"": ""Iogurte Yopro Chocolate"", ""grams"": 250 }
+            ]
+        }";
+
+        _llmClientMock.Setup(l => l.GenerateCompletionAsync(
+                It.IsAny<string>(),
+                It.IsAny<string>(),
+                true,
+                It.IsAny<string>(),
+                It.IsAny<string>(),
+                It.IsAny<CancellationToken>()))
+            .ReturnsAsync(Result<string>.Ok(validJson));
+
+        // Banco local não tem o alimento
+        _foodRepoMock.Setup(f => f.SearchAsync(null, 1, 100, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new List<FoodEntity>());
+
+        var resolvedUuid = Guid.NewGuid();
+        var resolvedFood = new FoodModel
+        {
+            Uuid = resolvedUuid,
+            Name = "Iogurte Yopro Chocolate (Danone)",
+            Calories = 64,
+            Protein = 6.8m,
+            Carbohydrates = 7.2m,
+            Fat = 0.9m,
+            IsCustom = true
+        };
+
+        _foodServiceMock.Setup(f => f.ResolveFoodByNameAsync("Iogurte Yopro Chocolate", It.IsAny<CancellationToken>()))
+            .ReturnsAsync(Result<FoodModel>.Ok(resolvedFood));
+
+        var mealUuid = Guid.NewGuid();
+        _mealLogServiceMock.Setup(m => m.CreateMealLogAsync(It.IsAny<MealLogCreateModel>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new MealLogModel
+            {
+                Uuid = mealUuid,
+                Name = "Lanche Proteico",
+                TotalCalories = 160,
+                TotalProtein = 17
+            });
+
+        _mealLogServiceMock.Setup(m => m.GetDailyGapOverviewAsync(It.IsAny<DateOnly?>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new DailyGapOverviewModel { CalorieGap = 800, ProteinGap = 30 });
+
+        var service = CreateService();
+        var result = await service.ProcessNaturalLanguageMealAsync(new NaturalLanguageMealLogRequestModel
+        {
+            Text = "tomei um iogurte yopro chocolate de 250g"
+        });
+
+        result.Success.Should().BeTrue();
+        result.Data.Should().NotBeNull();
+        result.Data!.HasUnmatchedItems.Should().BeFalse();
+        result.Data.MealLogUuid.Should().Be(mealUuid);
+        result.Data.Summary.Should().Contain("Iogurte Yopro Chocolate (Danone)");
+
+        _foodServiceMock.Verify(f => f.ResolveFoodByNameAsync("Iogurte Yopro Chocolate", It.IsAny<CancellationToken>()), Times.Once);
+        _mealLogServiceMock.Verify(m => m.CreateMealLogAsync(It.Is<MealLogCreateModel>(c => c.Items.Any(i => i.FoodUuid == resolvedUuid)), It.IsAny<CancellationToken>()), Times.Once);
     }
 
     [Fact]
@@ -243,14 +295,7 @@ public class NaturalLanguageMealLogServiceTests
                 ProteinGap = 65
             });
 
-        var service = new NaturalLanguageMealLogService(
-            _uowMock.Object,
-            _llmClientMock.Object,
-            _mealLogServiceMock.Object,
-            _requestValidator,
-            _extractionValidator,
-            _loggerMock.Object);
-
+        var service = CreateService();
         var result = await service.ProcessNaturalLanguageMealAsync(new NaturalLanguageMealLogRequestModel
         {
             Text = "comi 3 ovos cozidos e 2 paes franceses com requeijao"
@@ -270,4 +315,3 @@ public class NaturalLanguageMealLogServiceTests
         _mealLogServiceMock.Verify(m => m.CreateMealLogAsync(It.Is<MealLogCreateModel>(c => c.Items.Count == 3), It.IsAny<CancellationToken>()), Times.Once);
     }
 }
-

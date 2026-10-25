@@ -1,8 +1,11 @@
 using FluentValidation;
 using Microsoft.Extensions.Logging;
+using SmartBulk.Application.Helpers;
 using SmartBulk.Application.Interfaces;
 using SmartBulk.Application.Mappers;
 using SmartBulk.Application.Models;
+using SmartBulk.Domain.Entities;
+using SmartBulk.Domain.Http.OpenFoodFacts;
 using SmartBulk.Domain.Results;
 using SmartBulk.Domain.UnitOfWorks;
 
@@ -12,20 +15,24 @@ public class FoodService : IFoodService
 {
     private readonly IUnitOfWorkApp _unitOfWork;
     private readonly IValidator<FoodModel> _validator;
+    private readonly IFoodExternalProvider _foodExternalProvider;
     private readonly ILogger<FoodService> _logger;
 
     public FoodService(
         IUnitOfWorkApp unitOfWork,
         IValidator<FoodModel> validator,
+        IFoodExternalProvider foodExternalProvider,
         ILogger<FoodService> logger)
     {
         _unitOfWork = unitOfWork;
         _validator = validator;
+        _foodExternalProvider = foodExternalProvider;
         _logger = logger;
     }
 
     public async Task<Result<PagedResultModel<FoodModel>>> SearchAsync(FoodQueryModel query, CancellationToken cancellationToken = default)
     {
+        var transactionStarted = false;
         try
         {
             var pageNumber = query?.PageNumber > 0 ? query.PageNumber : 1;
@@ -33,6 +40,38 @@ public class FoodService : IFoodService
 
             var entities = await _unitOfWork.Food.SearchAsync(query?.Name, pageNumber, pageSize, cancellationToken);
             var totalCount = await _unitOfWork.Food.CountAsync(query?.Name, cancellationToken);
+
+            if (totalCount == 0 && !string.IsNullOrWhiteSpace(query?.Name))
+            {
+                var externalResult = await _foodExternalProvider.SearchFoodsAsync(query.Name, cancellationToken);
+                if (externalResult.Success && externalResult.Data != null && externalResult.Data.Count > 0)
+                {
+                    _unitOfWork.BeginTransaction();
+                    transactionStarted = true;
+
+                    var seenNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                    foreach (var ext in externalResult.Data)
+                    {
+                        var entity = ext.ToEntity()!;
+                        if (!seenNames.Add(entity.Name))
+                        {
+                            continue;
+                        }
+
+                        var existing = await _unitOfWork.Food.GetByNameAsync(entity.Name, cancellationToken);
+                        if (existing == null)
+                        {
+                            await _unitOfWork.Food.CreateAsync(entity, cancellationToken);
+                        }
+                    }
+
+                    _unitOfWork.Commit();
+                    transactionStarted = false;
+
+                    entities = await _unitOfWork.Food.SearchAsync(query.Name, pageNumber, pageSize, cancellationToken);
+                    totalCount = await _unitOfWork.Food.CountAsync(query.Name, cancellationToken);
+                }
+            }
 
             var result = new PagedResultModel<FoodModel>
             {
@@ -46,7 +85,86 @@ public class FoodService : IFoodService
         }
         catch (Exception ex)
         {
+            if (transactionStarted)
+            {
+                _unitOfWork.Rollback();
+            }
+
             _logger.LogError(ex, "Error searching foods with query: {@Query}", query);
+            return ErrorMessages.UnknownError;
+        }
+    }
+
+    public async Task<Result<FoodModel>> ResolveFoodByNameAsync(string rawName, CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(rawName))
+            return ErrorMessages.EntityNotFound;
+
+        var transactionStarted = false;
+        try
+        {
+            var trimmedName = rawName.Trim();
+
+            // 1. Passo 1: Busca no banco local via Dapper (TACO + Customizados)
+            var existingExact = await _unitOfWork.Food.GetByNameAsync(trimmedName, cancellationToken);
+            if (existingExact != null)
+            {
+                return existingExact.ToModel()!;
+            }
+
+            var candidates = (await _unitOfWork.Food.SearchAsync(trimmedName, 1, 30, cancellationToken))?.ToList() ?? new List<FoodEntity>();
+            var matchedLocal = FoodMatcherHelper.FindMatchingFood(trimmedName, candidates);
+            if (matchedLocal != null)
+            {
+                return matchedLocal.ToModel()!;
+            }
+
+            if (candidates.Count == 0)
+            {
+                var allLocal = (await _unitOfWork.Food.SearchAsync(null, 1, 100, cancellationToken))?.ToList() ?? new List<FoodEntity>();
+                matchedLocal = FoodMatcherHelper.FindMatchingFood(trimmedName, allLocal);
+                if (matchedLocal != null)
+                {
+                    return matchedLocal.ToModel()!;
+                }
+            }
+
+            // 2. Passo 2: Fallback Externo (Open Food Facts)
+            var externalResult = await _foodExternalProvider.SearchFoodsAsync(trimmedName, cancellationToken);
+            if (!externalResult.Success || externalResult.Data is null || externalResult.Data.Count == 0)
+            {
+                return ErrorMessages.EntityNotFound;
+            }
+
+            var bestMatch = externalResult.Data[0];
+
+            // 3. Passo 3: Auto-Cache no SQL Server via Dapper (IsCustom = true) dentro do UnitOfWork
+            var newEntity = bestMatch.ToEntity()!;
+            var duplicate = await _unitOfWork.Food.GetByNameAsync(newEntity.Name, cancellationToken);
+            if (duplicate != null)
+            {
+                return duplicate.ToModel()!;
+            }
+
+            _unitOfWork.BeginTransaction();
+            transactionStarted = true;
+
+            var id = await _unitOfWork.Food.CreateAsync(newEntity, cancellationToken);
+            newEntity.Id = id;
+
+            _unitOfWork.Commit();
+            transactionStarted = false;
+
+            return newEntity.ToModel()!;
+        }
+        catch (Exception ex)
+        {
+            if (transactionStarted)
+            {
+                _unitOfWork.Rollback();
+            }
+
+            _logger.LogError(ex, "Error resolving food by name {RawName}", rawName);
             return ErrorMessages.UnknownError;
         }
     }

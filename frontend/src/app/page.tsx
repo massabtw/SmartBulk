@@ -8,15 +8,16 @@ import { CreatineToggle } from "@/components/CreatineToggle";
 import { WeightLogger } from "@/components/WeightLogger";
 import { ShakeSuggestionCard } from "@/components/ShakeSuggestionCard";
 import { MealHistoryList } from "@/components/MealHistoryList";
-import { bffGet } from "@/lib/bff";
+import { bffGet, bffSend } from "@/lib/bff";
 import { addDaysISO, parseLocalISODate, todayISO } from "@/lib/dates";
 import {
   DailyGapModel,
   ShakeAdjustmentModel,
   WeightLogModel,
   CreatineLogModel,
+  CafeteriaDayOverrideModel,
 } from "@/types/api";
-import { ChevronLeft, ChevronRight, RefreshCw, Flame, AlertTriangle } from "lucide-react";
+import { ChevronLeft, ChevronRight, RefreshCw, Flame, AlertTriangle, Building2 } from "lucide-react";
 
 export default function TodayPage() {
   const [dateStr, setDateStr] = useState<string>(() => todayISO());
@@ -75,6 +76,21 @@ export default function TodayPage() {
     day: "numeric",
     month: "long",
   });
+
+  const handleToggleTodayDinner = async () => {
+    if (!gapData?.cafeteria) return;
+    const currentIncludeDinner = gapData.cafeteria.includeDinner ?? true;
+    const nextIncludeDinner = !currentIncludeDinner;
+
+    await bffSend<CafeteriaDayOverrideModel>("POST", "cafeteriamenu/day-override", {
+      date: dateStr,
+      hasCafeteria: true,
+      includeDinner: nextIncludeDinner,
+      reason: nextIncludeDinner ? null : "NoDinner",
+    });
+
+    await loadData(true);
+  };
 
   return (
     <main className="flex-1 px-4 space-y-4 pb-6">
@@ -177,6 +193,37 @@ export default function TodayPage() {
               </span>
             </div>
           </div>
+
+          {gapData.cafeteria && gapData.cafeteria.hasCafeteria && (
+            <div className="flex flex-wrap items-center justify-between gap-2 p-2.5 rounded-xl bg-zinc-950/80 border border-zinc-800/80 text-xs">
+              <div className="flex items-center gap-2">
+                <Building2
+                  size={15}
+                  className={
+                    gapData.cafeteria.includeDinner ?? true ? "text-emerald-400" : "text-amber-400"
+                  }
+                />
+                <span className="text-zinc-300 font-medium text-[11px]">
+                  {(gapData.cafeteria.includeDinner ?? true)
+                    ? "Refeitório hoje: Almoço (1.0x) + Jantar (0.75x)"
+                    : "Refeitório hoje: Apenas Almoço (Sem jantar lá • 0.0x)"}
+                </span>
+              </div>
+              <button
+                type="button"
+                onClick={handleToggleTodayDinner}
+                className={`px-2.5 py-1 rounded-lg text-[11px] font-semibold transition-colors border ${
+                  gapData.cafeteria.includeDinner ?? true
+                    ? "bg-zinc-800 border-zinc-700 text-zinc-200 hover:bg-zinc-700 hover:text-white"
+                    : "bg-rose-950/40 border-rose-500/40 text-rose-300 hover:bg-rose-900/50"
+                }`}
+              >
+                {(gapData.cafeteria.includeDinner ?? true)
+                  ? "Não vou jantar lá"
+                  : "Sem jantar lá (0.0x) • Reativar"}
+              </button>
+            </div>
+          )}
 
           {gapData.cafeteria &&
             gapData.cafeteria.hasCafeteria &&

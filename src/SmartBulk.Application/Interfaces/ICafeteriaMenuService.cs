@@ -12,6 +12,7 @@ public interface ICafeteriaMenuService
     Task<Result<CafeteriaMealItemModel>> AddItemAsync(Guid mealUuid, CafeteriaMealItemCreateModel model, CancellationToken cancellationToken = default);
     Task<Result> DeleteItemAsync(Guid itemUuid, CancellationToken cancellationToken = default);
     Task<Result<CafeteriaMenuModel>> ConfirmMenuAsync(Guid menuUuid, CancellationToken cancellationToken = default);
+    Task<Result<CafeteriaMenuModel>> ConfirmWeekAsync(DateOnly? weekStartDate = null, CancellationToken cancellationToken = default);
     Task<Result<CafeteriaMenuModel>> ReopenMenuAsync(Guid menuUuid, CancellationToken cancellationToken = default);
     Task<Result<CafeteriaMealModel>> UpdateMealPlateProfileAsync(Guid mealUuid, CafeteriaMealPlateProfileUpdateModel model, CancellationToken cancellationToken = default);
     Task<Result<CafeteriaMealModel>> UpdateMealPlateProfileByDateAsync(CafeteriaMealPlateProfileByDateUpdateModel model, CancellationToken cancellationToken = default);

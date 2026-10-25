@@ -61,14 +61,27 @@ export interface MealLogModel {
   items: MealLogItemModel[];
 }
 
+export interface CafeteriaMealGuaranteedModel {
+  mealUuid: string;
+  mealType: string;
+  plateProfile: string;
+  multiplier: number;
+  calories: number;
+  protein: number;
+  carbohydrates: number;
+  fat: number;
+}
+
 export interface CafeteriaDailyGuaranteedModel {
   date: string;
   hasCafeteria: boolean;
+  includeDinner?: boolean;
   hasConfirmedMenu: boolean;
   calories: number;
   protein: number;
   carbohydrates: number;
   fat: number;
+  meals?: CafeteriaMealGuaranteedModel[];
 }
 
 /** Espelha DailyGapOverviewModel do backend (GET /api/MealLog/daily-gap). */
@@ -132,6 +145,7 @@ export interface CafeteriaDayOverrideModel {
   uuid: string;
   date: string;
   hasCafeteria: boolean;
+  includeDinner?: boolean;
   reason?: string | null;
 }
 

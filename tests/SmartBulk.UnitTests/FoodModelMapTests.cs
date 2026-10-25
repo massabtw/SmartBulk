@@ -2,6 +2,7 @@ using FluentAssertions;
 using SmartBulk.Application.Mappers;
 using SmartBulk.Application.Models;
 using SmartBulk.Domain.Entities;
+using SmartBulk.Domain.Http.OpenFoodFacts.Models;
 using Xunit;
 
 namespace SmartBulk.UnitTests;
@@ -83,6 +84,32 @@ public class FoodModelMapTests
         FoodModel? model = null;
         var entity = model.ToEntity();
         entity.Should().BeNull();
+    }
+
+    [Fact]
+    public void ToEntity_WhenExternalFoodModelHasBrand_FormatsNameAndMarksAsCustom()
+    {
+        var external = new ExternalFoodModel
+        {
+            Name = "Iogurte Proteico",
+            Brand = "Danone",
+            Calories = 64m,
+            Protein = 6.8m,
+            Carbohydrates = 7.2m,
+            Fat = 0.9m
+        };
+
+        var entity = external.ToEntity();
+
+        entity.Should().NotBeNull();
+        entity!.Name.Should().Be("Iogurte Proteico (Danone)");
+        entity.Calories.Should().Be(64m);
+        entity.Protein.Should().Be(6.8m);
+        entity.Carbohydrates.Should().Be(7.2m);
+        entity.Fat.Should().Be(0.9m);
+        entity.IsCustom.Should().BeTrue();
+        entity.Uuid.Should().NotBeEmpty();
+        entity.Deleted.Should().BeFalse();
     }
 
     [Fact]

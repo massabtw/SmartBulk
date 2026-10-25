@@ -48,6 +48,23 @@ public class FoodRepository : IFoodRepository
         return await _unitOfWork.Connection.QueryFirstOrDefaultAsync<FoodEntity>(command);
     }
 
+    public async Task<FoodEntity?> GetByNameAsync(string name, CancellationToken cancellationToken = default)
+    {
+        const string sql = @"
+            SELECT TOP 1 Id, Uuid, Name, Calories, Protein, Carbohydrates, Fat, IsCustom, IsFavorite, RawYieldFactor, CreatedAt, UpdatedAt, Deleted
+              FROM Food
+             WHERE Name = @Name
+               AND Deleted = 0";
+
+        var command = new CommandDefinition(
+            sql,
+            new { Name = name?.Trim() },
+            transaction: _unitOfWork.Transaction,
+            cancellationToken: cancellationToken);
+
+        return await _unitOfWork.Connection.QueryFirstOrDefaultAsync<FoodEntity>(command);
+    }
+
     public async Task<IEnumerable<FoodEntity>> SearchAsync(string? name, int pageNumber, int pageSize, CancellationToken cancellationToken = default)
     {
         pageNumber = Math.Max(1, pageNumber);

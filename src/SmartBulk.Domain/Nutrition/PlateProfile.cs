@@ -21,7 +21,7 @@ public static class PlateProfileExtensions
     public static string GetDisplayName(this PlateProfile profile) => profile switch
     {
         PlateProfile.Generous => "Prato bom (1.25x)",
-        PlateProfile.Small => "Prato ruim (0.75x)",
+        PlateProfile.Small => "Padrão reduzido (0.75x)",
         PlateProfile.None => "Não comi (0.0x)",
         _ => "Padrão (1.0x)"
     };
@@ -32,9 +32,9 @@ public static class PlateProfileExtensions
         if (Enum.TryParse<PlateProfile>(value, true, out var parsed)) return parsed;
 
         var lower = value.Trim().ToLowerInvariant();
-        if (lower.Contains("bom") || lower.Contains("generous")) return PlateProfile.Generous;
-        if (lower.Contains("ruim") || lower.Contains("small")) return PlateProfile.Small;
-        if (lower.Contains("não") || lower.Contains("nao") || lower.Contains("none") || lower.Contains("skip")) return PlateProfile.None;
+        if (lower.Contains("bom") || lower.Contains("generous") || lower.Contains("good")) return PlateProfile.Generous;
+        if (lower.Contains("ruim") || lower.Contains("small") || lower.Contains("poor") || lower.Contains("reduzid")) return PlateProfile.Small;
+        if (lower.Contains("não") || lower.Contains("nao") || lower.Contains("none") || lower.Contains("skip") || lower.Contains("janto") || lower.Contains("pulei")) return PlateProfile.None;
 
         return PlateProfile.Standard;
     }

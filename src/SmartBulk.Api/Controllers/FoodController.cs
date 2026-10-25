@@ -30,6 +30,16 @@ public class FoodController : ControllerBase
         return result.Ok();
     }
 
+    [HttpGet("resolve")]
+    public async Task<IActionResult> Resolve(
+        [FromServices] IFoodService service,
+        [FromQuery] string name,
+        CancellationToken cancellationToken)
+    {
+        var result = await service.ResolveFoodByNameAsync(name, cancellationToken);
+        return result.Ok();
+    }
+
     [HttpGet("{uuid}")]
     public async Task<IActionResult> GetByUuid(
         [FromServices] IFoodService service,

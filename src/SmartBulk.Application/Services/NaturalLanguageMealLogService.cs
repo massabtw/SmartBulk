@@ -3,6 +3,7 @@ using FluentValidation;
 using Microsoft.Extensions.Logging;
 using SmartBulk.Application.Helpers;
 using SmartBulk.Application.Interfaces;
+using SmartBulk.Application.Mappers;
 using SmartBulk.Application.Models;
 using SmartBulk.Domain.Entities;
 using SmartBulk.Domain.Http.Llm;
@@ -17,6 +18,7 @@ public class NaturalLanguageMealLogService : INaturalLanguageMealLogService
     private readonly IUnitOfWorkApp _unitOfWork;
     private readonly ILlmClient _llmClient;
     private readonly IMealLogService _mealLogService;
+    private readonly IFoodService _foodService;
     private readonly IValidator<NaturalLanguageMealLogRequestModel> _requestValidator;
     private readonly IValidator<NaturalLanguageMealLlmExtractionModel> _extractionValidator;
     private readonly ILogger<NaturalLanguageMealLogService> _logger;
@@ -30,6 +32,7 @@ public class NaturalLanguageMealLogService : INaturalLanguageMealLogService
         IUnitOfWorkApp unitOfWork,
         ILlmClient llmClient,
         IMealLogService mealLogService,
+        IFoodService foodService,
         IValidator<NaturalLanguageMealLogRequestModel> requestValidator,
         IValidator<NaturalLanguageMealLlmExtractionModel> extractionValidator,
         ILogger<NaturalLanguageMealLogService> logger)
@@ -37,6 +40,7 @@ public class NaturalLanguageMealLogService : INaturalLanguageMealLogService
         _unitOfWork = unitOfWork;
         _llmClient = llmClient;
         _mealLogService = mealLogService;
+        _foodService = foodService;
         _requestValidator = requestValidator;
         _extractionValidator = extractionValidator;
         _logger = logger;
@@ -56,7 +60,7 @@ public class NaturalLanguageMealLogService : INaturalLanguageMealLogService
                 return Result<NaturalLanguageMealLogResponseModel>.Fail(errors);
             }
 
-            // 2. Call LLM to extract meal items and estimated grams
+            // 2. Call LLM to extract meal items and estimated grams (semantic parsing only)
             var extractionResult = await ExtractMealFromLlmAsync(request, cancellationToken);
             if (!extractionResult.Success || extractionResult.Data is null)
             {
@@ -65,7 +69,7 @@ public class NaturalLanguageMealLogService : INaturalLanguageMealLogService
 
             var extraction = extractionResult.Data;
 
-            // 3. Match items against food catalog
+            // 3. Match items against food catalog (TACO local first, then Open Food Facts fallback)
             var allFoods = await LoadAllFoodsAsync(cancellationToken);
             var matchedItems = new List<(FoodEntity Food, decimal Grams, string ExtractedName)>();
             var unmatchedItems = new List<string>();
@@ -76,6 +80,16 @@ public class NaturalLanguageMealLogService : INaturalLanguageMealLogService
                 if (matchedFood != null)
                 {
                     matchedItems.Add((matchedFood, item.Grams, item.Name));
+                    continue;
+                }
+
+                // Fallback: consulta Open Food Facts com auto-cache via FoodService
+                var resolveResult = await _foodService.ResolveFoodByNameAsync(item.Name, cancellationToken);
+                if (resolveResult.Success && resolveResult.Data != null)
+                {
+                    var resolvedEntity = resolveResult.Data.ToEntity()!;
+                    allFoods.Add(resolvedEntity);
+                    matchedItems.Add((resolvedEntity, item.Grams, item.Name));
                 }
                 else
                 {
@@ -93,7 +107,7 @@ public class NaturalLanguageMealLogService : INaturalLanguageMealLogService
                     HasUnmatchedItems = true,
                     UnmatchedItems = unmatchedItems,
                     Message = "Alguns alimentos não foram localizados no catálogo.",
-                    Question = $"Não encontrei os seguintes alimentos no catálogo: {foodNames}. Qual alimento você gostaria de selecionar ou deseja cadastrá-lo?"
+                    Question = $"Não encontrei os seguintes alimentos no catálogo nem na busca externa: {foodNames}. Qual alimento você gostaria de selecionar ou deseja cadastrá-lo?"
                 };
             }
 
@@ -149,7 +163,8 @@ public class NaturalLanguageMealLogService : INaturalLanguageMealLogService
         CancellationToken cancellationToken)
     {
         const string systemPrompt = @"Você é um assistente especializado em nutrição esportiva e registro de dietas.
-Sua tarefa é analisar o relato de uma refeição feito em linguagem natural (e/ou foto) e identificar o nome descritivo da refeição e todos os alimentos consumidos com a respectiva estimativa em gramas.
+Sua tarefa é atuar EXCLUSIVAMENTE como um parser semântico do relato (ou foto) da refeição: identifique o nome descritivo da refeição e extraia o nome limpo de cada alimento consumido com a respectiva estimativa em gramas.
+NÃO invente, estime ou calcule calorias, carboidratos, proteínas ou gorduras: todo o cálculo nutricional é delegado integralmente aos catálogos do sistema (base TACO e Open Food Facts).
 Convenções de porções comuns:
 - 1 ovo médio = 50g (3 ovos = 150g)
 - 1 pão francês = 50g (2 pães = 100g)
@@ -275,4 +290,3 @@ Responda EXCLUSIVAMENTE em JSON no formato:
         return allFoods;
     }
 }
-
