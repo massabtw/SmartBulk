@@ -1,3 +1,4 @@
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using SmartBulk.Api.Extensions;
 using SmartBulk.Application.Interfaces;
@@ -7,6 +8,7 @@ namespace SmartBulk.Api.Controllers;
 
 [ApiController]
 [Route("api/[controller]")]
+[Authorize]
 public class SettingsController : ControllerBase
 {
     [HttpGet]

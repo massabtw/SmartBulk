@@ -27,6 +27,16 @@ public static class ResultExtensions
         return HandleError(result);
     }
 
+    public static IActionResult Created<T>(this Result<T> result, Func<T, string> uriFactory)
+    {
+        if (result.Success && result.Data is not null)
+        {
+            return new CreatedResult(uriFactory(result.Data), result.Data);
+        }
+
+        return result.Created();
+    }
+
     public static IActionResult NoContent<T>(this Result<T> result)
     {
         if (result.Success)
@@ -65,4 +75,3 @@ public static class ResultExtensions
         });
     }
 }
-

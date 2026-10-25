@@ -15,7 +15,7 @@
   </ItemGroup>
 
   <ItemGroup>
-    <EmbeddedResource Include="Database\Scripts\*.sql" />
+    <EmbeddedResource Include="..\..\Database\*.sql" LinkBase="Database\Scripts" />
   </ItemGroup>
 
   <ItemGroup>

@@ -9,9 +9,59 @@ public class CafeteriaMenuRepository : ICafeteriaMenuRepository
 {
     private readonly UnitOfWorkApp _unitOfWork;
 
+    private const string SqlItemWithFoodSelect = @"
+        SELECT item.Id, item.Uuid, item.CafeteriaMealId, item.FoodId, item.RawName, item.ServingGrams, item.IsPending, item.CreatedAt, item.UpdatedAt, item.Deleted,
+               f.Id, f.Uuid, f.Name, f.Calories, f.Protein, f.Carbohydrates, f.Fat, f.IsCustom, f.IsFavorite, f.RawYieldFactor
+          FROM CafeteriaMealItem item
+          LEFT JOIN Food f ON f.Id = item.FoodId AND f.Deleted = 0";
+
     public CafeteriaMenuRepository(UnitOfWorkApp unitOfWork)
     {
         _unitOfWork = unitOfWork;
+    }
+
+    public async Task<CafeteriaMenuEntity?> GetByIdAsync(int id, CancellationToken cancellationToken = default)
+    {
+        const string sqlMenu = @"
+            SELECT TOP 1 Id, Uuid, WeekStartDate, Status, CreatedAt, UpdatedAt, Deleted
+              FROM CafeteriaMenu
+             WHERE Id = @id
+               AND Deleted = 0";
+
+        var command = new CommandDefinition(
+            sqlMenu,
+            new { id },
+            transaction: _unitOfWork.Transaction,
+            cancellationToken: cancellationToken);
+
+        var menu = await _unitOfWork.Connection.QueryFirstOrDefaultAsync<CafeteriaMenuEntity>(command);
+        if (menu is null) return null;
+
+        await PopulateMealsAndItemsAsync(menu, cancellationToken);
+        return menu;
+    }
+
+    public async Task<CafeteriaMenuEntity?> GetByMealIdAsync(int mealId, CancellationToken cancellationToken = default)
+    {
+        const string sqlMenu = @"
+            SELECT TOP 1 m.Id, m.Uuid, m.WeekStartDate, m.Status, m.CreatedAt, m.UpdatedAt, m.Deleted
+              FROM CafeteriaMenu m
+              INNER JOIN CafeteriaMeal meal ON meal.CafeteriaMenuId = m.Id
+             WHERE meal.Id = @mealId
+               AND meal.Deleted = 0
+               AND m.Deleted = 0";
+
+        var command = new CommandDefinition(
+            sqlMenu,
+            new { mealId },
+            transaction: _unitOfWork.Transaction,
+            cancellationToken: cancellationToken);
+
+        var menu = await _unitOfWork.Connection.QueryFirstOrDefaultAsync<CafeteriaMenuEntity>(command);
+        if (menu is null) return null;
+
+        await PopulateMealsAndItemsAsync(menu, cancellationToken);
+        return menu;
     }
 
     public async Task<CafeteriaMenuEntity?> GetByWeekStartDateAsync(DateOnly weekStartDate, CancellationToken cancellationToken = default)
@@ -69,36 +119,36 @@ public class CafeteriaMenuRepository : ICafeteriaMenuRepository
         var meal = await _unitOfWork.Connection.QueryFirstOrDefaultAsync<CafeteriaMealEntity>(command);
         if (meal is null) return null;
 
-        const string sqlItems = @"
-            SELECT item.Id, item.Uuid, item.CafeteriaMealId, item.FoodId, item.RawName, item.ServingGrams, item.IsPending, item.CreatedAt, item.UpdatedAt, item.Deleted,
-                   f.Id, f.Uuid, f.Name, f.Calories, f.Protein, f.Carbohydrates, f.Fat, f.IsCustom, f.RawYieldFactor
-              FROM CafeteriaMealItem item
-              LEFT JOIN Food f ON f.Id = item.FoodId AND f.Deleted = 0
-             WHERE item.CafeteriaMealId = @MealId
-               AND item.Deleted = 0";
+        meal.Items = await QueryMealItemsByMealIdAsync(meal.Id, cancellationToken);
+        return meal;
+    }
 
-        var items = await _unitOfWork.Connection.QueryAsync<CafeteriaMealItemEntity, FoodEntity, CafeteriaMealItemEntity>(
-            sqlItems,
-            (item, food) =>
-            {
-                item.Food = food;
-                return item;
-            },
-            new { MealId = meal.Id },
+    public async Task<CafeteriaMealEntity?> GetMealByDateAndTypeAsync(DateOnly date, string mealType, CancellationToken cancellationToken = default)
+    {
+        const string sql = @"
+            SELECT TOP 1 Id, Uuid, CafeteriaMenuId, Date, MealType, PlateProfile, CreatedAt, UpdatedAt, Deleted
+              FROM CafeteriaMeal
+             WHERE Date = @Date
+               AND MealType = @MealType
+               AND Deleted = 0
+             ORDER BY Id DESC";
+
+        var command = new CommandDefinition(
+            sql,
+            new { Date = date.ToDateTime(TimeOnly.MinValue), MealType = mealType },
             transaction: _unitOfWork.Transaction,
-            splitOn: "Id");
+            cancellationToken: cancellationToken);
 
-        meal.Items = items.ToList();
+        var meal = await _unitOfWork.Connection.QueryFirstOrDefaultAsync<CafeteriaMealEntity>(command);
+        if (meal is null) return null;
+
+        meal.Items = await QueryMealItemsByMealIdAsync(meal.Id, cancellationToken);
         return meal;
     }
 
     public async Task<CafeteriaMealItemEntity?> GetItemByUuidAsync(Guid uuid, CancellationToken cancellationToken = default)
     {
-        const string sql = @"
-            SELECT item.Id, item.Uuid, item.CafeteriaMealId, item.FoodId, item.RawName, item.ServingGrams, item.IsPending, item.CreatedAt, item.UpdatedAt, item.Deleted,
-                   f.Id, f.Uuid, f.Name, f.Calories, f.Protein, f.Carbohydrates, f.Fat, f.IsCustom, f.RawYieldFactor
-              FROM CafeteriaMealItem item
-              LEFT JOIN Food f ON f.Id = item.FoodId AND f.Deleted = 0
+        const string sql = SqlItemWithFoodSelect + @"
              WHERE item.Uuid = @uuid
                AND item.Deleted = 0";
 
@@ -106,14 +156,30 @@ public class CafeteriaMenuRepository : ICafeteriaMenuRepository
 
         var items = await _unitOfWork.Connection.QueryAsync<CafeteriaMealItemEntity, FoodEntity, CafeteriaMealItemEntity>(
             command,
-            (item, food) =>
-            {
-                item.Food = food;
-                return item;
-            },
+            MapItemWithFood,
             splitOn: "Id");
 
         return items.FirstOrDefault();
+    }
+
+    private async Task<List<CafeteriaMealItemEntity>> QueryMealItemsByMealIdAsync(int mealId, CancellationToken cancellationToken)
+    {
+        const string sqlItems = SqlItemWithFoodSelect + @"
+             WHERE item.CafeteriaMealId = @MealId
+               AND item.Deleted = 0";
+
+        var command = new CommandDefinition(
+            sqlItems,
+            new { MealId = mealId },
+            transaction: _unitOfWork.Transaction,
+            cancellationToken: cancellationToken);
+
+        var items = await _unitOfWork.Connection.QueryAsync<CafeteriaMealItemEntity, FoodEntity, CafeteriaMealItemEntity>(
+            command,
+            MapItemWithFood,
+            splitOn: "Id");
+
+        return items.ToList();
     }
 
     private async Task PopulateMealsAndItemsAsync(CafeteriaMenuEntity menu, CancellationToken cancellationToken)
@@ -136,23 +202,19 @@ public class CafeteriaMenuRepository : ICafeteriaMenuRepository
 
         var mealIds = meals.Select(m => m.Id).ToList();
 
-        const string sqlItems = @"
-            SELECT item.Id, item.Uuid, item.CafeteriaMealId, item.FoodId, item.RawName, item.ServingGrams, item.IsPending, item.CreatedAt, item.UpdatedAt, item.Deleted,
-                   f.Id, f.Uuid, f.Name, f.Calories, f.Protein, f.Carbohydrates, f.Fat, f.IsCustom, f.RawYieldFactor
-              FROM CafeteriaMealItem item
-              LEFT JOIN Food f ON f.Id = item.FoodId AND f.Deleted = 0
+        const string sqlItems = SqlItemWithFoodSelect + @"
              WHERE item.CafeteriaMealId IN @mealIds
                AND item.Deleted = 0";
 
-        var items = await _unitOfWork.Connection.QueryAsync<CafeteriaMealItemEntity, FoodEntity, CafeteriaMealItemEntity>(
+        var command = new CommandDefinition(
             sqlItems,
-            (item, food) =>
-            {
-                item.Food = food;
-                return item;
-            },
             new { mealIds },
             transaction: _unitOfWork.Transaction,
+            cancellationToken: cancellationToken);
+
+        var items = await _unitOfWork.Connection.QueryAsync<CafeteriaMealItemEntity, FoodEntity, CafeteriaMealItemEntity>(
+            command,
+            MapItemWithFood,
             splitOn: "Id");
 
         var itemsByMeal = items.GroupBy(i => i.CafeteriaMealId).ToDictionary(g => g.Key, g => g.ToList());
@@ -168,16 +230,28 @@ public class CafeteriaMenuRepository : ICafeteriaMenuRepository
         menu.Meals = meals;
     }
 
+    private static CafeteriaMealItemEntity MapItemWithFood(CafeteriaMealItemEntity item, FoodEntity? food)
+    {
+        item.Food = food;
+        return item;
+    }
+
     public async Task<int> CreateMenuAsync(CafeteriaMenuEntity menu, CancellationToken cancellationToken = default)
     {
+        if (menu.Uuid == Guid.Empty)
+        {
+            menu.Uuid = Guid.NewGuid();
+        }
+
         const string sql = @"
-            INSERT INTO CafeteriaMenu (WeekStartDate, Status, CreatedAt, UpdatedAt, Deleted)
+            INSERT INTO CafeteriaMenu (Uuid, WeekStartDate, Status, CreatedAt, UpdatedAt, Deleted)
             OUTPUT Inserted.Id
-            VALUES (@WeekStartDate, @Status, @CreatedAt, @UpdatedAt, 0)";
+            VALUES (@Uuid, @WeekStartDate, @Status, @CreatedAt, @UpdatedAt, 0)";
 
         var now = DateTimeOffset.UtcNow;
         var parameters = new
         {
+            menu.Uuid,
             WeekStartDate = menu.WeekStartDate.ToDateTime(TimeOnly.MinValue),
             menu.Status,
             CreatedAt = now,
@@ -190,14 +264,20 @@ public class CafeteriaMenuRepository : ICafeteriaMenuRepository
 
     public async Task<int> CreateMealAsync(CafeteriaMealEntity meal, CancellationToken cancellationToken = default)
     {
+        if (meal.Uuid == Guid.Empty)
+        {
+            meal.Uuid = Guid.NewGuid();
+        }
+
         const string sql = @"
-            INSERT INTO CafeteriaMeal (CafeteriaMenuId, Date, MealType, PlateProfile, CreatedAt, UpdatedAt, Deleted)
+            INSERT INTO CafeteriaMeal (Uuid, CafeteriaMenuId, Date, MealType, PlateProfile, CreatedAt, UpdatedAt, Deleted)
             OUTPUT Inserted.Id
-            VALUES (@CafeteriaMenuId, @Date, @MealType, @PlateProfile, @CreatedAt, @UpdatedAt, 0)";
+            VALUES (@Uuid, @CafeteriaMenuId, @Date, @MealType, @PlateProfile, @CreatedAt, @UpdatedAt, 0)";
 
         var now = DateTimeOffset.UtcNow;
         var parameters = new
         {
+            meal.Uuid,
             meal.CafeteriaMenuId,
             Date = meal.Date.ToDateTime(TimeOnly.MinValue),
             meal.MealType,
@@ -212,14 +292,20 @@ public class CafeteriaMenuRepository : ICafeteriaMenuRepository
 
     public async Task<int> CreateMealItemAsync(CafeteriaMealItemEntity item, CancellationToken cancellationToken = default)
     {
+        if (item.Uuid == Guid.Empty)
+        {
+            item.Uuid = Guid.NewGuid();
+        }
+
         const string sql = @"
-            INSERT INTO CafeteriaMealItem (CafeteriaMealId, FoodId, RawName, ServingGrams, IsPending, CreatedAt, UpdatedAt, Deleted)
+            INSERT INTO CafeteriaMealItem (Uuid, CafeteriaMealId, FoodId, RawName, ServingGrams, IsPending, CreatedAt, UpdatedAt, Deleted)
             OUTPUT Inserted.Id
-            VALUES (@CafeteriaMealId, @FoodId, @RawName, @ServingGrams, @IsPending, @CreatedAt, @UpdatedAt, 0)";
+            VALUES (@Uuid, @CafeteriaMealId, @FoodId, @RawName, @ServingGrams, @IsPending, @CreatedAt, @UpdatedAt, 0)";
 
         var now = DateTimeOffset.UtcNow;
         var parameters = new
         {
+            item.Uuid,
             item.CafeteriaMealId,
             item.FoodId,
             item.RawName,

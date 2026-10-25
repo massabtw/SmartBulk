@@ -1,5 +1,6 @@
 using FluentValidation;
 using Microsoft.Extensions.Logging;
+using SmartBulk.Application.Helpers;
 using SmartBulk.Application.Interfaces;
 using SmartBulk.Application.Mappers;
 using SmartBulk.Application.Models;
@@ -31,6 +32,7 @@ public class MealLogService : IMealLogService
 
     public async Task<Result<MealLogModel>> CreateMealLogAsync(MealLogCreateModel model, CancellationToken cancellationToken = default)
     {
+        var transactionStarted = false;
         try
         {
             var validation = await _validator.ValidateAsync(model, cancellationToken);
@@ -40,14 +42,11 @@ public class MealLogService : IMealLogService
                 return Result<MealLogModel>.Fail(errors);
             }
 
-            var date = model.Date ?? DateOnly.FromDateTime(DateTime.UtcNow);
+            var date = model.Date ?? await TimeZoneDateHelper.GetUserTodayAsync(_unitOfWork, cancellationToken);
             var loggedAt = model.LoggedAt ?? DateTimeOffset.UtcNow;
 
             var itemEntities = new List<MealLogItemEntity>();
-            decimal totalCalories = 0;
-            decimal totalProtein = 0;
-            decimal totalCarbs = 0;
-            decimal totalFat = 0;
+            var totalNutrition = NutritionalValue.Zero;
 
             foreach (var item in model.Items)
             {
@@ -64,33 +63,14 @@ public class MealLogService : IMealLogService
                     food.Fat,
                     item.ServingGrams);
 
-                totalCalories += portion.Calories;
-                totalProtein += portion.Protein;
-                totalCarbs += portion.Carbohydrates;
-                totalFat += portion.Fat;
-
-                itemEntities.Add(new MealLogItemEntity
-                {
-                    FoodId = food.Id,
-                    ServingGrams = item.ServingGrams,
-                    Calories = portion.Calories,
-                    Protein = portion.Protein,
-                    Carbohydrates = portion.Carbohydrates,
-                    Fat = portion.Fat,
-                    Food = food
-                });
+                totalNutrition += portion;
+                itemEntities.Add(item.ToEntity(food, portion));
             }
 
-            var mealEntity = new MealLogEntity
-            {
-                Date = date,
-                LoggedAt = loggedAt,
-                Name = model.Name.Trim(),
-                TotalCalories = Math.Round(totalCalories, 2),
-                TotalProtein = Math.Round(totalProtein, 2),
-                TotalCarbohydrates = Math.Round(totalCarbs, 2),
-                TotalFat = Math.Round(totalFat, 2)
-            };
+            var mealEntity = model.ToEntity(date, loggedAt, totalNutrition, itemEntities);
+
+            _unitOfWork.BeginTransaction();
+            transactionStarted = true;
 
             var mealId = await _unitOfWork.MealLog.CreateMealAsync(mealEntity, cancellationToken);
             mealEntity.Id = mealId;
@@ -102,11 +82,18 @@ public class MealLogService : IMealLogService
                 item.Id = itemId;
             }
 
-            mealEntity.Items = itemEntities;
+            _unitOfWork.Commit();
+            transactionStarted = false;
+
             return mealEntity.ToModel()!;
         }
         catch (Exception ex)
         {
+            if (transactionStarted)
+            {
+                _unitOfWork.Rollback();
+            }
+
             _logger.LogError(ex, "Error creating meal log: {Name}", model.Name);
             return ErrorMessages.UnknownError;
         }
@@ -129,11 +116,15 @@ public class MealLogService : IMealLogService
         }
     }
 
-    public async Task<Result<IEnumerable<MealLogModel>>> GetMealLogsByDateAsync(DateOnly date, CancellationToken cancellationToken = default)
+    public async Task<Result<IEnumerable<MealLogModel>>> GetMealLogsByDateAsync(DateOnly? date = null, CancellationToken cancellationToken = default)
     {
         try
         {
-            var meals = await _unitOfWork.MealLog.GetByDateAsync(date, cancellationToken);
+            var targetDate = date is null || date.Value == default
+                ? await TimeZoneDateHelper.GetUserTodayAsync(_unitOfWork, cancellationToken)
+                : date.Value;
+
+            var meals = await _unitOfWork.MealLog.GetByDateAsync(targetDate, cancellationToken);
             var models = meals.Select(m => m.ToModel()!).Where(m => m != null).ToList();
             return models;
         }
@@ -195,12 +186,16 @@ public class MealLogService : IMealLogService
         }
     }
 
-    public async Task<Result<DailyGapOverviewModel>> GetDailyGapOverviewAsync(DateOnly date, CancellationToken cancellationToken = default)
+    public async Task<Result<DailyGapOverviewModel>> GetDailyGapOverviewAsync(DateOnly? date = null, CancellationToken cancellationToken = default)
     {
         try
         {
-            // 1. Settings (targets)
+            // 1. Settings (targets + timezone)
             var settings = await _unitOfWork.UserSettings.GetAsync(cancellationToken);
+            var targetDate = date is null || date.Value == default
+                ? TimeZoneDateHelper.GetTodayInTimeZone(settings?.TimeZoneId)
+                : date.Value;
+
             var calorieTarget = settings?.CalorieTargetKcal ?? 3000;
             var proteinTargetGPerKg = settings?.ProteinTargetGPerKg ?? 2.0m;
 
@@ -221,23 +216,21 @@ public class MealLogService : IMealLogService
             }
 
             // 3. Consumed meals on date
-            var meals = (await _unitOfWork.MealLog.GetByDateAsync(date, cancellationToken)).ToList();
-            var consumedKcal = meals.Sum(m => m.TotalCalories);
-            var consumedProtein = meals.Sum(m => m.TotalProtein);
-            var consumedCarbs = meals.Sum(m => m.TotalCarbohydrates);
-            var consumedFat = meals.Sum(m => m.TotalFat);
-
-            var consumedNutritionalValue = new NutritionalValue(consumedKcal, consumedProtein, consumedCarbs, consumedFat);
+            var meals = (await _unitOfWork.MealLog.GetByDateAsync(targetDate, cancellationToken)).ToList();
+            var consumedNutritionalValue = new NutritionalValue(
+                meals.Sum(m => m.TotalCalories),
+                meals.Sum(m => m.TotalProtein),
+                meals.Sum(m => m.TotalCarbohydrates),
+                meals.Sum(m => m.TotalFat));
 
             // 4. Guaranteed cafeteria nutrition on date
-            var cafeteriaResult = await _cafeteriaService.GetDailyGuaranteedAsync(date, cancellationToken);
+            var cafeteriaResult = await _cafeteriaService.GetDailyGuaranteedAsync(targetDate, cancellationToken);
             var cafeteria = cafeteriaResult.Data;
-            var cafeteriaKcal = cafeteria?.Calories ?? 0m;
-            var cafeteriaProtein = cafeteria?.Protein ?? 0m;
-            var cafeteriaCarbs = cafeteria?.Carbohydrates ?? 0m;
-            var cafeteriaFat = cafeteria?.Fat ?? 0m;
-
-            var cafeteriaNutritionalValue = new NutritionalValue(cafeteriaKcal, cafeteriaProtein, cafeteriaCarbs, cafeteriaFat);
+            var cafeteriaNutritionalValue = new NutritionalValue(
+                cafeteria?.Calories ?? 0m,
+                cafeteria?.Protein ?? 0m,
+                cafeteria?.Carbohydrates ?? 0m,
+                cafeteria?.Fat ?? 0m);
 
             // 5. Gap calculation
             var gap = NutritionCalculator.CalculateDailyGap(
@@ -246,28 +239,7 @@ public class MealLogService : IMealLogService
                 consumedNutritionalValue,
                 cafeteriaNutritionalValue);
 
-            var overview = new DailyGapOverviewModel
-            {
-                Date = date,
-                CalorieTarget = calorieTarget,
-                ProteinTarget = proteinTarget,
-                LatestWeightKg = latestWeightKg,
-                WeightWarning = weightWarning,
-                ConsumedCalories = Math.Round(consumedKcal, 2),
-                ConsumedProtein = Math.Round(consumedProtein, 2),
-                ConsumedCarbohydrates = Math.Round(consumedCarbs, 2),
-                ConsumedFat = Math.Round(consumedFat, 2),
-                CafeteriaCalories = cafeteriaKcal,
-                CafeteriaProtein = cafeteriaProtein,
-                CafeteriaCarbohydrates = cafeteriaCarbs,
-                CafeteriaFat = cafeteriaFat,
-                CalorieGap = gap.CalorieGap,
-                ProteinGap = gap.ProteinGap,
-                Meals = meals.Select(m => m.ToModel()!).Where(m => m != null).ToList(),
-                Cafeteria = cafeteria
-            };
-
-            return overview;
+            return gap.ToDailyGapOverviewModel(targetDate, latestWeightKg, weightWarning, meals, cafeteria);
         }
         catch (Exception ex)
         {

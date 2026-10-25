@@ -1,3 +1,4 @@
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using SmartBulk.Api.Extensions;
 using SmartBulk.Application.Interfaces;
@@ -7,6 +8,7 @@ namespace SmartBulk.Api.Controllers;
 
 [ApiController]
 [Route("api/[controller]")]
+[Authorize]
 public class CreatineController : ControllerBase
 {
     [HttpPost]
@@ -15,8 +17,7 @@ public class CreatineController : ControllerBase
         [FromBody] CreatineLogModel model,
         CancellationToken cancellationToken)
     {
-        var date = model.Date == default ? DateOnly.FromDateTime(DateTime.UtcNow) : model.Date;
-        var result = await service.SetCreatineAsync(date, model.Taken, cancellationToken);
+        var result = await service.SetCreatineAsync(model, cancellationToken);
         return result.Ok();
     }
 
@@ -26,8 +27,7 @@ public class CreatineController : ControllerBase
         [FromQuery] DateOnly? date,
         CancellationToken cancellationToken)
     {
-        var targetDate = date ?? DateOnly.FromDateTime(DateTime.UtcNow);
-        var result = await service.GetByDateAsync(targetDate, cancellationToken);
+        var result = await service.GetByDateAsync(date, cancellationToken);
         return result.Ok();
     }
 
@@ -38,10 +38,7 @@ public class CreatineController : ControllerBase
         [FromQuery] DateOnly? endDate,
         CancellationToken cancellationToken)
     {
-        var end = endDate ?? DateOnly.FromDateTime(DateTime.UtcNow);
-        var start = startDate ?? end.AddDays(-30);
-
-        var result = await service.GetHistoryAsync(start, end, cancellationToken);
+        var result = await service.GetHistoryAsync(startDate, endDate, cancellationToken);
         return result.Ok();
     }
 }

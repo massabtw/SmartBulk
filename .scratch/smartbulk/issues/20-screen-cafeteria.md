@@ -4,12 +4,12 @@
 
 **Blocked by:** 08: Revisar e confirmar cardápio; 09: Perfil de prato e HasCafeteria; 18: Fundação do frontend Next.js
 
-**Status:** ready-for-agent
+**Status:** done
 
 Padrões: seguir as skills de frontend listadas no `AGENTS.md` (Next.js App Router, React/Vercel, Tailwind, Framer Motion, web-design-guidelines). Dark mode, mobile-first, microinterações suaves. Contexto: `../spec.md`.
 
-- [ ] Envio do cardápio por texto, JSON ou imagem
-- [ ] Revisão por refeição com edição de gramas, troca de alimento e pendências destacadas
-- [ ] Botão de confirmar habilitado só sem pendências
-- [ ] Seletor de perfil (Padrão, Bom, Ruim) por refeição e alternância de `HasCafeteria` por dia
-- [ ] Total nutricional estimado visível por refeição
+- [x] Envio do cardápio por texto, JSON ou imagem
+- [x] Revisão por refeição com edição de gramas, troca de alimento e pendências destacadas
+- [x] Botão de confirmar habilitado só sem pendências
+- [x] Seletor de perfil (Padrão, Bom, Ruim) por refeição e alternância de `HasCafeteria` por dia
+- [x] Total nutricional estimado visível por refeição

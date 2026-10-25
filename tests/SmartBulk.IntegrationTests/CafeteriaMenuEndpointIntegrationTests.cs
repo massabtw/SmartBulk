@@ -200,6 +200,86 @@ public class CafeteriaMenuEndpointIntegrationTests : IClassFixture<WebApplicatio
     }
 
     [Fact]
+    public async Task UpdateAddAndDeleteItem_WhenConfirmed_ReturnsBadRequest400_AndWhenReopened_Succeeds()
+    {
+        var mealUuid = Guid.NewGuid();
+        var itemUuid = Guid.NewGuid();
+        var currentStatus = "Confirmed";
+
+        var client = _factory.WithWebHostBuilder(builder =>
+        {
+            builder.ConfigureTestServices(services =>
+            {
+                var uowMock = new Mock<IUnitOfWorkApp>();
+                var menuRepoMock = new Mock<ICafeteriaMenuRepository>();
+                var foodRepoMock = new Mock<IFoodRepository>();
+
+                menuRepoMock.Setup(m => m.GetItemByUuidAsync(itemUuid, It.IsAny<CancellationToken>()))
+                    .ReturnsAsync(new CafeteriaMealItemEntity
+                    {
+                        Id = 100,
+                        Uuid = itemUuid,
+                        CafeteriaMealId = 10,
+                        RawName = "Arroz",
+                        ServingGrams = 150m
+                    });
+
+                menuRepoMock.Setup(m => m.GetMealByUuidAsync(mealUuid, It.IsAny<CancellationToken>()))
+                    .ReturnsAsync(new CafeteriaMealEntity
+                    {
+                        Id = 10,
+                        Uuid = mealUuid,
+                        CafeteriaMenuId = 1,
+                        Date = new DateOnly(2026, 10, 28) // Wednesday
+                    });
+
+                menuRepoMock.Setup(m => m.GetByMealIdAsync(10, It.IsAny<CancellationToken>()))
+                    .ReturnsAsync(() => new CafeteriaMenuEntity { Id = 1, Status = currentStatus });
+
+                menuRepoMock.Setup(m => m.GetByIdAsync(1, It.IsAny<CancellationToken>()))
+                    .ReturnsAsync(() => new CafeteriaMenuEntity { Id = 1, Status = currentStatus });
+
+                menuRepoMock.Setup(m => m.UpdateMealItemAsync(It.IsAny<CafeteriaMealItemEntity>(), It.IsAny<CancellationToken>()))
+                    .ReturnsAsync(true);
+
+                menuRepoMock.Setup(m => m.CreateMealItemAsync(It.IsAny<CafeteriaMealItemEntity>(), It.IsAny<CancellationToken>()))
+                    .ReturnsAsync(101);
+
+                menuRepoMock.Setup(m => m.DeleteMealItemAsync(itemUuid, It.IsAny<CancellationToken>()))
+                    .ReturnsAsync(true);
+
+                uowMock.Setup(u => u.CafeteriaMenu).Returns(menuRepoMock.Object);
+                uowMock.Setup(u => u.Food).Returns(foodRepoMock.Object);
+                services.AddTransient(_ => uowMock.Object);
+            });
+        }).CreateClient();
+
+        client.DefaultRequestHeaders.Add("X-Api-Key", ValidApiKey);
+
+        // 1. Confirmed menu blocks update, add, and delete
+        var blockedUpdate = await client.PutAsJsonAsync($"/api/cafeteriamenu/items/{itemUuid}", new CafeteriaMealItemUpdateModel { ServingGrams = 200m });
+        blockedUpdate.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+
+        var blockedAdd = await client.PostAsJsonAsync($"/api/cafeteriamenu/meals/{mealUuid}/items", new CafeteriaMealItemCreateModel { RawName = "Feijão", ServingGrams = 100m });
+        blockedAdd.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+
+        var blockedDelete = await client.DeleteAsync($"/api/cafeteriamenu/items/{itemUuid}");
+        blockedDelete.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+
+        // 2. Reopen menu -> operations succeed
+        currentStatus = "Draft";
+
+        var okUpdate = await client.PutAsJsonAsync($"/api/cafeteriamenu/items/{itemUuid}", new CafeteriaMealItemUpdateModel { ServingGrams = 200m });
+        okUpdate.StatusCode.Should().Be(HttpStatusCode.OK);
+
+        var okAdd = await client.PostAsJsonAsync($"/api/cafeteriamenu/meals/{mealUuid}/items", new CafeteriaMealItemCreateModel { RawName = "Feijão", ServingGrams = 100m });
+        okAdd.StatusCode.Should().Be(HttpStatusCode.Created);
+
+        var okDelete = await client.DeleteAsync($"/api/cafeteriamenu/items/{itemUuid}");
+        okDelete.StatusCode.Should().Be(HttpStatusCode.OK);
+    }
+
+    [Fact]
     public async Task UpdateMealPlateProfile_WithValidApiKey_ReturnsOk200()
     {
         var mealUuid = Guid.NewGuid();

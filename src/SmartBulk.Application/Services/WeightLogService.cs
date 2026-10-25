@@ -1,5 +1,6 @@
 using FluentValidation;
 using Microsoft.Extensions.Logging;
+using SmartBulk.Application.Helpers;
 using SmartBulk.Application.Interfaces;
 using SmartBulk.Application.Mappers;
 using SmartBulk.Application.Models;
@@ -30,7 +31,7 @@ public class WeightLogService : IWeightLogService
         {
             if (model.Date == default)
             {
-                model.Date = DateOnly.FromDateTime(DateTime.UtcNow);
+                model.Date = await TimeZoneDateHelper.GetUserTodayAsync(_unitOfWork, cancellationToken);
             }
 
             var validationResult = await _validator.ValidateAsync(model, cancellationToken);
@@ -70,16 +71,24 @@ public class WeightLogService : IWeightLogService
         }
     }
 
-    public async Task<Result<IEnumerable<WeightLogModel>>> GetHistoryAsync(DateOnly startDate, DateOnly endDate, CancellationToken cancellationToken = default)
+    public async Task<Result<IEnumerable<WeightLogModel>>> GetHistoryAsync(DateOnly? startDate = null, DateOnly? endDate = null, CancellationToken cancellationToken = default)
     {
         try
         {
-            if (startDate > endDate)
+            var end = endDate is null || endDate.Value == default
+                ? await TimeZoneDateHelper.GetUserTodayAsync(_unitOfWork, cancellationToken)
+                : endDate.Value;
+
+            var start = startDate is null || startDate.Value == default
+                ? end.AddDays(-30)
+                : startDate.Value;
+
+            if (start > end)
             {
-                (startDate, endDate) = (endDate, startDate);
+                (start, end) = (end, start);
             }
 
-            var entities = await _unitOfWork.WeightLog.GetHistoryAsync(startDate, endDate, cancellationToken);
+            var entities = await _unitOfWork.WeightLog.GetHistoryAsync(start, end, cancellationToken);
             return entities.ToModel().ToList();
         }
         catch (Exception ex)

@@ -1,7 +1,5 @@
 using FluentAssertions;
-using Microsoft.Data.SqlClient;
 using SmartBulk.Domain.Entities;
-using SmartBulk.Infrastructure.Database;
 using SmartBulk.Infrastructure.Repositories;
 using SmartBulk.Infrastructure.UnitOfWorks;
 using Xunit;
@@ -10,37 +8,14 @@ namespace SmartBulk.IntegrationTests;
 
 public class FoodRepositoryIntegrationTests
 {
-    private const string LocalDbConnection = "Server=(localdb)\\MSSQLLocalDB;Database=SmartBulk_IntegrationTest;Trusted_Connection=True;TrustServerCertificate=True;";
-    private const string DockerConnection = "Server=localhost,1433;Database=SmartBulk_IntegrationTest;User Id=sa;Password=Your_Strong_Password123!;TrustServerCertificate=True;Connect Timeout=3;";
-
     [Fact]
     public async Task FoodRepository_WhenSqlServerAvailable_PerformsAccentInsensitiveSearchAndCrud()
     {
-        string? activeConnection = null;
-
-        foreach (var connStr in new[] { LocalDbConnection, DockerConnection })
-        {
-            try
-            {
-                using var conn = new SqlConnection(connStr);
-                await conn.OpenAsync();
-                activeConnection = connStr;
-                break;
-            }
-            catch
-            {
-                // Try next
-            }
-        }
-
+        var activeConnection = await TestDatabaseHelper.TryGetActiveConnectionAsync();
         if (activeConnection == null)
         {
-            // Database is not running in this environment, skip live DB test
             return;
         }
-
-        // Apply migrations including 003_CreateFoodTable.sql
-        DatabaseMigrator.MigrateDatabase(activeConnection);
 
         var uow = new UnitOfWorkApp(activeConnection);
         var repo = new FoodRepository(uow);
@@ -55,7 +30,7 @@ public class FoodRepositoryIntegrationTests
         arrozResults.Should().NotBeEmpty();
         arrozResults.Should().Contain(f => f.Name.Contains("Arroz"));
 
-        // Create custom food
+        // Create custom food and verify its exact Uuid is persisted
         var customFood = new FoodEntity
         {
             Uuid = Guid.NewGuid(),
@@ -65,7 +40,8 @@ public class FoodRepositoryIntegrationTests
             Carbohydrates = 35,
             Fat = 18,
             IsCustom = true,
-            RawYieldFactor = 1.0m
+            IsFavorite = true,
+            RawYieldFactor = null
         };
 
         var id = await repo.CreateAsync(customFood);
@@ -75,10 +51,24 @@ public class FoodRepositoryIntegrationTests
         fetched.Should().NotBeNull();
         fetched!.Name.Should().Be("Vitamina de Abacate Caseira");
         fetched.IsCustom.Should().BeTrue();
+        fetched.IsFavorite.Should().BeTrue();
+
+        // Update favorite via SetFavoriteAsync
+        var favUpdated = await repo.SetFavoriteAsync(customFood.Uuid, false);
+        favUpdated.Should().BeTrue();
+
+        var afterFavUpdate = await repo.GetByUuidAsync(customFood.Uuid);
+        afterFavUpdate!.IsFavorite.Should().BeFalse();
+
+        // Query favorites
+        await repo.SetFavoriteAsync(customFood.Uuid, true);
+        var favorites = await repo.GetFavoritesAsync();
+        favorites.Should().Contain(f => f.Uuid == customFood.Uuid);
 
         // Update custom food
         fetched.Name = "Vitamina de Abacate com Mel";
         fetched.Calories = 360;
+        fetched.IsFavorite = false;
         var updated = await repo.UpdateAsync(fetched);
         updated.Should().BeTrue();
 

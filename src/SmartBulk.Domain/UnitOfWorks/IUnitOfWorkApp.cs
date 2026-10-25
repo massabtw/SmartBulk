@@ -12,4 +12,7 @@ public interface IUnitOfWorkApp : IUnitOfWork
     ICafeteriaMenuRepository CafeteriaMenu { get; }
     ICafeteriaDayOverrideRepository CafeteriaDayOverride { get; }
     IMealLogRepository MealLog { get; }
+    IMealTemplateRepository MealTemplate { get; }
+    IHomeMealPlanRepository HomeMealPlan { get; }
+    IShoppingListRepository ShoppingList { get; }
 }

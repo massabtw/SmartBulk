@@ -17,6 +17,14 @@ public static class IoC
         services.AddTransient<ICreatineLogService, CreatineLogService>();
         services.AddTransient<ICafeteriaMenuService, CafeteriaMenuService>();
         services.AddTransient<IMealLogService, MealLogService>();
+        services.AddTransient<IMealTemplateService, MealTemplateService>();
+        services.AddTransient<IShakeAdjustmentService, ShakeAdjustmentService>();
+        services.AddTransient<INaturalLanguageMealLogService, NaturalLanguageMealLogService>();
+        services.AddSingleton<ICafeteriaReminderTracker, CafeteriaReminderTracker>();
+        services.AddTransient<ICafeteriaReminderService, CafeteriaReminderService>();
+        services.AddTransient<ITelegramUpdateHandler, TelegramUpdateHandler>();
+        services.AddTransient<IHomeMealPlanService, HomeMealPlanService>();
+        services.AddTransient<IShoppingListService, ShoppingListService>();
 
         ValidatorOptions.Global.LanguageManager.Culture = new CultureInfo("pt-BR");
         services.AddValidatorsFromAssembly(typeof(IoC).Assembly);

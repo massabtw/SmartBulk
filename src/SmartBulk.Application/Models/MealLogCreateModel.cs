@@ -1,11 +1,5 @@
 namespace SmartBulk.Application.Models;
 
-public class MealLogItemCreateModel
-{
-    public Guid FoodUuid { get; set; }
-    public decimal ServingGrams { get; set; }
-}
-
 public class MealLogCreateModel
 {
     public DateOnly? Date { get; set; }

@@ -31,6 +31,16 @@ public static class CreatineLogModelMap
         };
     }
 
+    public static CreatineLogEntity ToEntity(this DateOnly date, bool taken)
+    {
+        return new CreatineLogEntity
+        {
+            Uuid = Guid.NewGuid(),
+            Date = date,
+            Taken = taken
+        };
+    }
+
     public static IEnumerable<CreatineLogModel> ToModel(this IEnumerable<CreatineLogEntity> entities)
     {
         return entities?.Select(e => e.ToModel()!).Where(m => m != null) ?? Enumerable.Empty<CreatineLogModel>();

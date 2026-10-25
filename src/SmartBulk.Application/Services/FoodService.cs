@@ -72,10 +72,10 @@ public class FoodService : IFoodService
     {
         try
         {
-            var validationResult = await _validator.ValidateAsync(model, cancellationToken);
-            if (!validationResult.IsValid)
+            var validation = await _validator.ValidateAsync(model, cancellationToken);
+            if (!validation.IsValid)
             {
-                var errors = validationResult.Errors.Select(e => e.ErrorMessage).ToList();
+                var errors = validation.Errors.Select(e => e.ErrorMessage).ToList();
                 return Result<FoodModel>.Fail(errors);
             }
 
@@ -90,7 +90,7 @@ public class FoodService : IFoodService
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Error creating custom food.");
+            _logger.LogError(ex, "Error creating custom food: {@Model}", model);
             return ErrorMessages.UnknownError;
         }
     }
@@ -106,10 +106,10 @@ public class FoodService : IFoodService
             if (!existing.IsCustom)
                 return Result<FoodModel>.Fail("Alimentos da TACO não podem ser alterados.");
 
-            var validationResult = await _validator.ValidateAsync(model, cancellationToken);
-            if (!validationResult.IsValid)
+            var validation = await _validator.ValidateAsync(model, cancellationToken);
+            if (!validation.IsValid)
             {
-                var errors = validationResult.Errors.Select(e => e.ErrorMessage).ToList();
+                var errors = validation.Errors.Select(e => e.ErrorMessage).ToList();
                 return Result<FoodModel>.Fail(errors);
             }
 
@@ -152,6 +152,42 @@ public class FoodService : IFoodService
         catch (Exception ex)
         {
             _logger.LogError(ex, "Error deleting custom food with uuid: {Uuid}", uuid);
+            return ErrorMessages.UnknownError;
+        }
+    }
+
+    public async Task<Result> SetFavoriteAsync(Guid uuid, bool isFavorite, CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            var existing = await _unitOfWork.Food.GetByUuidAsync(uuid, cancellationToken);
+            if (existing is null)
+                return ErrorMessages.EntityNotFound;
+
+            var updated = await _unitOfWork.Food.SetFavoriteAsync(uuid, isFavorite, cancellationToken);
+            if (!updated)
+                return ErrorMessages.UnknownError;
+
+            return Result.Ok();
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error setting favorite state for food with uuid: {Uuid}", uuid);
+            return ErrorMessages.UnknownError;
+        }
+    }
+
+    public async Task<Result<IEnumerable<FoodModel>>> GetFavoritesAsync(CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            var entities = await _unitOfWork.Food.GetFavoritesAsync(cancellationToken);
+            var models = entities.ToModel().ToList();
+            return Result<IEnumerable<FoodModel>>.Ok(models);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error retrieving favorite foods");
             return ErrorMessages.UnknownError;
         }
     }

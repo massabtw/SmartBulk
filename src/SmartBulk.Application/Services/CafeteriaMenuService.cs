@@ -1,11 +1,16 @@
+using System.Globalization;
+using System.Text;
 using System.Text.Json;
 using FluentValidation;
 using Microsoft.Extensions.Logging;
+using SmartBulk.Application.Helpers;
 using SmartBulk.Application.Interfaces;
 using SmartBulk.Application.Mappers;
 using SmartBulk.Application.Models;
+using SmartBulk.Application.Validations;
 using SmartBulk.Domain.Entities;
 using SmartBulk.Domain.Http.Llm;
+using SmartBulk.Domain.Http.Llm.Models;
 using SmartBulk.Domain.Nutrition;
 using SmartBulk.Domain.Results;
 using SmartBulk.Domain.UnitOfWorks;
@@ -18,6 +23,11 @@ public class CafeteriaMenuService : ICafeteriaMenuService
     private readonly ILlmClient _llmClient;
     private readonly IValidator<CafeteriaMenuIngestModel> _ingestValidator;
     private readonly IValidator<CafeteriaLlmExtractionModel> _extractionValidator;
+    private readonly IValidator<CafeteriaMealItemCreateModel> _itemCreateValidator;
+    private readonly IValidator<CafeteriaMealItemUpdateModel> _itemUpdateValidator;
+    private readonly IValidator<CafeteriaMealPlateProfileUpdateModel> _plateProfileValidator;
+    private readonly IValidator<CafeteriaMealPlateProfileByDateUpdateModel> _plateProfileByDateValidator;
+    private readonly IValidator<CafeteriaDayOverrideUpsertModel> _dayOverrideValidator;
     private readonly ILogger<CafeteriaMenuService> _logger;
 
     private static readonly JsonSerializerOptions JsonOptions = new()
@@ -30,17 +40,28 @@ public class CafeteriaMenuService : ICafeteriaMenuService
         ILlmClient llmClient,
         IValidator<CafeteriaMenuIngestModel> ingestValidator,
         IValidator<CafeteriaLlmExtractionModel> extractionValidator,
-        ILogger<CafeteriaMenuService> logger)
+        ILogger<CafeteriaMenuService> logger,
+        IValidator<CafeteriaMealItemCreateModel>? itemCreateValidator = null,
+        IValidator<CafeteriaMealItemUpdateModel>? itemUpdateValidator = null,
+        IValidator<CafeteriaMealPlateProfileUpdateModel>? plateProfileValidator = null,
+        IValidator<CafeteriaMealPlateProfileByDateUpdateModel>? plateProfileByDateValidator = null,
+        IValidator<CafeteriaDayOverrideUpsertModel>? dayOverrideValidator = null)
     {
         _unitOfWork = unitOfWork;
         _llmClient = llmClient;
         _ingestValidator = ingestValidator;
         _extractionValidator = extractionValidator;
         _logger = logger;
+        _itemCreateValidator = itemCreateValidator ?? new CafeteriaMealItemCreateModelValidator();
+        _itemUpdateValidator = itemUpdateValidator ?? new CafeteriaMealItemUpdateModelValidator();
+        _plateProfileValidator = plateProfileValidator ?? new CafeteriaMealPlateProfileUpdateModelValidator();
+        _plateProfileByDateValidator = plateProfileByDateValidator ?? new CafeteriaMealPlateProfileByDateUpdateModelValidator();
+        _dayOverrideValidator = dayOverrideValidator ?? new CafeteriaDayOverrideUpsertModelValidator();
     }
 
     public async Task<Result<CafeteriaMenuModel>> IngestMenuAsync(CafeteriaMenuIngestModel model, CancellationToken cancellationToken = default)
     {
+        var transactionStarted = false;
         try
         {
             var validation = await _ingestValidator.ValidateAsync(model, cancellationToken);
@@ -50,7 +71,10 @@ public class CafeteriaMenuService : ICafeteriaMenuService
                 return Result<CafeteriaMenuModel>.Fail(errors);
             }
 
-            var weekStart = model.WeekStartDate ?? GetWeekMonday(DateOnly.FromDateTime(DateTime.UtcNow));
+            var today = await TimeZoneDateHelper.GetUserTodayAsync(_unitOfWork, cancellationToken);
+            var weekStart = model.WeekStartDate.HasValue
+                ? GetWeekMonday(model.WeekStartDate.Value)
+                : GetWeekMonday(today);
 
             // Extract with LLM
             var extraction = await ExtractWithLlmAsync(model, weekStart, cancellationToken);
@@ -59,18 +83,15 @@ public class CafeteriaMenuService : ICafeteriaMenuService
                 return Result<CafeteriaMenuModel>.Fail(extraction.Errors);
             }
 
-            // Create draft menu in database
-            var menuEntity = new CafeteriaMenuEntity
-            {
-                WeekStartDate = weekStart,
-                Status = "Draft"
-            };
+            // Load full food catalog for matching
+            var allFoods = await LoadAllFoodsAsync(cancellationToken);
 
+            _unitOfWork.BeginTransaction();
+            transactionStarted = true;
+
+            var menuEntity = weekStart.ToEntity("Draft");
             var menuId = await _unitOfWork.CafeteriaMenu.CreateMenuAsync(menuEntity, cancellationToken);
             menuEntity.Id = menuId;
-
-            // Cache food catalog for fast matching
-            var allFoods = (await _unitOfWork.Food.SearchAsync(null, 1, 100, cancellationToken)).ToList();
 
             foreach (var extractedMeal in extraction.Data.Meals)
             {
@@ -79,33 +100,17 @@ public class CafeteriaMenuService : ICafeteriaMenuService
                     mealDate = weekStart;
                 }
 
-                var mealEntity = new CafeteriaMealEntity
-                {
-                    CafeteriaMenuId = menuId,
-                    Date = mealDate,
-                    MealType = NormalizeMealType(extractedMeal.MealType),
-                    PlateProfile = "Standard"
-                };
-
+                var mealEntity = extractedMeal.ToEntity(menuId, mealDate, NormalizeMealType(extractedMeal.MealType));
                 var mealId = await _unitOfWork.CafeteriaMenu.CreateMealAsync(mealEntity, cancellationToken);
                 mealEntity.Id = mealId;
 
                 foreach (var extractedItem in extractedMeal.Items)
                 {
                     var matchedFood = FindMatchingFood(extractedItem.Name, allFoods);
-
-                    var itemEntity = new CafeteriaMealItemEntity
-                    {
-                        CafeteriaMealId = mealId,
-                        FoodId = matchedFood?.Id,
-                        RawName = extractedItem.Name.Trim(),
-                        ServingGrams = extractedItem.Grams > 0 ? extractedItem.Grams : 100m,
-                        IsPending = matchedFood == null
-                    };
+                    var itemEntity = extractedItem.ToEntity(mealId, matchedFood);
 
                     var itemId = await _unitOfWork.CafeteriaMenu.CreateMealItemAsync(itemEntity, cancellationToken);
                     itemEntity.Id = itemId;
-                    itemEntity.Food = matchedFood;
 
                     mealEntity.Items.Add(itemEntity);
                 }
@@ -113,21 +118,33 @@ public class CafeteriaMenuService : ICafeteriaMenuService
                 menuEntity.Meals.Add(mealEntity);
             }
 
+            _unitOfWork.Commit();
+            transactionStarted = false;
+
             var reloaded = await _unitOfWork.CafeteriaMenu.GetByWeekStartDateAsync(weekStart, cancellationToken);
             return (reloaded ?? menuEntity).ToModel()!;
         }
         catch (Exception ex)
         {
+            if (transactionStarted)
+            {
+                _unitOfWork.Rollback();
+            }
+
             _logger.LogError(ex, "Error ingesting cafeteria menu.");
             return ErrorMessages.UnknownError;
         }
     }
 
-    public async Task<Result<CafeteriaMenuModel>> GetMenuByDateAsync(DateOnly date, CancellationToken cancellationToken = default)
+    public async Task<Result<CafeteriaMenuModel>> GetMenuByDateAsync(DateOnly? date = null, CancellationToken cancellationToken = default)
     {
         try
         {
-            var monday = GetWeekMonday(date);
+            var targetDate = date is null || date.Value == default
+                ? await TimeZoneDateHelper.GetUserTodayAsync(_unitOfWork, cancellationToken)
+                : date.Value;
+
+            var monday = GetWeekMonday(targetDate);
             var menu = await _unitOfWork.CafeteriaMenu.GetByWeekStartDateAsync(monday, cancellationToken);
             if (menu is null)
                 return ErrorMessages.EntityNotFound;
@@ -162,19 +179,20 @@ public class CafeteriaMenuService : ICafeteriaMenuService
     {
         try
         {
+            var validation = await _itemUpdateValidator.ValidateAsync(model, cancellationToken);
+            if (!validation.IsValid)
+            {
+                return Result<CafeteriaMealItemModel>.Fail(validation.Errors.Select(e => e.ErrorMessage).ToList());
+            }
+
             var item = await _unitOfWork.CafeteriaMenu.GetItemByUuidAsync(itemUuid, cancellationToken);
             if (item is null)
                 return ErrorMessages.EntityNotFound;
 
-            var menu = await GetMenuByMealIdAsync(item.CafeteriaMealId, cancellationToken);
+            var menu = await ResolveMenuForMealIdAsync(item.CafeteriaMealId, cancellationToken);
             if (menu != null && menu.Status.Equals("Confirmed", StringComparison.OrdinalIgnoreCase))
             {
                 return Result<CafeteriaMealItemModel>.Fail("Cardápio confirmado não pode ser alterado. Reabra o cardápio para fazer alterações.");
-            }
-
-            if (model.ServingGrams <= 0)
-            {
-                return Result<CafeteriaMealItemModel>.Fail("A porção em gramas deve ser maior que zero.");
             }
 
             item.ServingGrams = model.ServingGrams;
@@ -218,24 +236,23 @@ public class CafeteriaMenuService : ICafeteriaMenuService
     {
         try
         {
+            var validation = await _itemCreateValidator.ValidateAsync(model, cancellationToken);
+            if (!validation.IsValid)
+            {
+                return Result<CafeteriaMealItemModel>.Fail(validation.Errors.Select(e => e.ErrorMessage).ToList());
+            }
+
             var meal = await _unitOfWork.CafeteriaMenu.GetMealByUuidAsync(mealUuid, cancellationToken);
             if (meal is null)
                 return ErrorMessages.EntityNotFound;
 
-            var menu = await _unitOfWork.CafeteriaMenu.GetByWeekStartDateAsync(meal.Date, cancellationToken);
+            var menu = await _unitOfWork.CafeteriaMenu.GetByIdAsync(meal.CafeteriaMenuId, cancellationToken)
+                       ?? await _unitOfWork.CafeteriaMenu.GetByMealIdAsync(meal.Id, cancellationToken)
+                       ?? await _unitOfWork.CafeteriaMenu.GetByWeekStartDateAsync(GetWeekMonday(meal.Date), cancellationToken);
+
             if (menu != null && menu.Status.Equals("Confirmed", StringComparison.OrdinalIgnoreCase))
             {
                 return Result<CafeteriaMealItemModel>.Fail("Cardápio confirmado não pode ser alterado. Reabra o cardápio para fazer alterações.");
-            }
-
-            if (string.IsNullOrWhiteSpace(model.RawName))
-            {
-                return Result<CafeteriaMealItemModel>.Fail("O nome do componente é obrigatório.");
-            }
-
-            if (model.ServingGrams <= 0)
-            {
-                return Result<CafeteriaMealItemModel>.Fail("A porção em gramas deve ser maior que zero.");
             }
 
             FoodEntity? food = null;
@@ -244,18 +261,9 @@ public class CafeteriaMenuService : ICafeteriaMenuService
                 food = await _unitOfWork.Food.GetByUuidAsync(model.FoodUuid.Value, cancellationToken);
             }
 
-            var itemEntity = new CafeteriaMealItemEntity
-            {
-                CafeteriaMealId = meal.Id,
-                FoodId = food?.Id,
-                RawName = model.RawName.Trim(),
-                ServingGrams = model.ServingGrams,
-                IsPending = food == null
-            };
-
+            var itemEntity = model.ToEntity(meal.Id, food);
             var id = await _unitOfWork.CafeteriaMenu.CreateMealItemAsync(itemEntity, cancellationToken);
             itemEntity.Id = id;
-            itemEntity.Food = food;
 
             return itemEntity.ToModel()!;
         }
@@ -274,7 +282,7 @@ public class CafeteriaMenuService : ICafeteriaMenuService
             if (item is null)
                 return ErrorMessages.EntityNotFound;
 
-            var menu = await GetMenuByMealIdAsync(item.CafeteriaMealId, cancellationToken);
+            var menu = await ResolveMenuForMealIdAsync(item.CafeteriaMealId, cancellationToken);
             if (menu != null && menu.Status.Equals("Confirmed", StringComparison.OrdinalIgnoreCase))
             {
                 return Result.Fail("Cardápio confirmado não pode ser alterado. Reabra o cardápio para fazer alterações.");
@@ -343,6 +351,12 @@ public class CafeteriaMenuService : ICafeteriaMenuService
     {
         try
         {
+            var validation = await _plateProfileValidator.ValidateAsync(model, cancellationToken);
+            if (!validation.IsValid)
+            {
+                return Result<CafeteriaMealModel>.Fail(validation.Errors.Select(e => e.ErrorMessage).ToList());
+            }
+
             var meal = await _unitOfWork.CafeteriaMenu.GetMealByUuidAsync(mealUuid, cancellationToken);
             if (meal is null)
                 return ErrorMessages.EntityNotFound;
@@ -352,6 +366,7 @@ public class CafeteriaMenuService : ICafeteriaMenuService
             if (!updated)
                 return ErrorMessages.UnknownError;
 
+            meal.PlateProfile = profile.ToString();
             var reloaded = await _unitOfWork.CafeteriaMenu.GetMealByUuidAsync(mealUuid, cancellationToken);
             return (reloaded ?? meal).ToModel()!;
         }
@@ -362,20 +377,55 @@ public class CafeteriaMenuService : ICafeteriaMenuService
         }
     }
 
-    public async Task<Result<CafeteriaDayOverrideModel>> GetDayOverrideAsync(DateOnly date, CancellationToken cancellationToken = default)
+    public async Task<Result<CafeteriaMealModel>> UpdateMealPlateProfileByDateAsync(CafeteriaMealPlateProfileByDateUpdateModel model, CancellationToken cancellationToken = default)
     {
         try
         {
-            var entity = await _unitOfWork.CafeteriaDayOverride.GetByDateAsync(date, cancellationToken);
+            var validation = await _plateProfileByDateValidator.ValidateAsync(model, cancellationToken);
+            if (!validation.IsValid)
+            {
+                return Result<CafeteriaMealModel>.Fail(validation.Errors.Select(e => e.ErrorMessage).ToList());
+            }
+
+            var normalizedType = NormalizeMealType(model.MealType);
+            var meal = await _unitOfWork.CafeteriaMenu.GetMealByDateAndTypeAsync(model.Date, normalizedType, cancellationToken);
+            if (meal is null)
+                return ErrorMessages.EntityNotFound;
+
+            var profile = PlateProfileExtensions.ParseOrDefault(model.PlateProfile);
+            var updated = await _unitOfWork.CafeteriaMenu.UpdateMealPlateProfileAsync(meal.Id, profile.ToString(), cancellationToken);
+            if (!updated)
+                return ErrorMessages.UnknownError;
+
+            meal.PlateProfile = profile.ToString();
+            var reloaded = await _unitOfWork.CafeteriaMenu.GetMealByUuidAsync(meal.Uuid, cancellationToken);
+            return (reloaded ?? meal).ToModel()!;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error updating plate profile for date {Date} and mealType {MealType}", model.Date, model.MealType);
+            return ErrorMessages.UnknownError;
+        }
+    }
+
+    public async Task<Result<CafeteriaDayOverrideModel>> GetDayOverrideAsync(DateOnly? date = null, CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            var targetDate = date is null || date.Value == default
+                ? await TimeZoneDateHelper.GetUserTodayAsync(_unitOfWork, cancellationToken)
+                : date.Value;
+
+            var entity = await _unitOfWork.CafeteriaDayOverride.GetByDateAsync(targetDate, cancellationToken);
             if (entity != null)
             {
                 return entity.ToModel()!;
             }
 
-            var defaultHasCafeteria = date.DayOfWeek != DayOfWeek.Saturday && date.DayOfWeek != DayOfWeek.Sunday;
+            var defaultHasCafeteria = targetDate.DayOfWeek != DayOfWeek.Saturday && targetDate.DayOfWeek != DayOfWeek.Sunday;
             return new CafeteriaDayOverrideModel
             {
-                Date = date,
+                Date = targetDate,
                 HasCafeteria = defaultHasCafeteria,
                 Reason = null
             };
@@ -391,6 +441,12 @@ public class CafeteriaMenuService : ICafeteriaMenuService
     {
         try
         {
+            var validation = await _dayOverrideValidator.ValidateAsync(model, cancellationToken);
+            if (!validation.IsValid)
+            {
+                return Result<CafeteriaDayOverrideModel>.Fail(validation.Errors.Select(e => e.ErrorMessage).ToList());
+            }
+
             var entity = model.ToEntity();
             await _unitOfWork.CafeteriaDayOverride.UpsertAsync(entity, cancellationToken);
 
@@ -418,101 +474,35 @@ public class CafeteriaMenuService : ICafeteriaMenuService
         }
     }
 
-    public async Task<Result<CafeteriaDailyGuaranteedModel>> GetDailyGuaranteedAsync(DateOnly date, CancellationToken cancellationToken = default)
+    public async Task<Result<CafeteriaDailyGuaranteedModel>> GetDailyGuaranteedAsync(DateOnly? date = null, CancellationToken cancellationToken = default)
     {
         try
         {
-            var dayOverride = await _unitOfWork.CafeteriaDayOverride.GetByDateAsync(date, cancellationToken);
+            var targetDate = date is null || date.Value == default
+                ? await TimeZoneDateHelper.GetUserTodayAsync(_unitOfWork, cancellationToken)
+                : date.Value;
+
+            var dayOverride = await _unitOfWork.CafeteriaDayOverride.GetByDateAsync(targetDate, cancellationToken);
             var hasCafeteria = dayOverride != null
                 ? dayOverride.HasCafeteria
-                : (date.DayOfWeek != DayOfWeek.Saturday && date.DayOfWeek != DayOfWeek.Sunday);
+                : (targetDate.DayOfWeek != DayOfWeek.Saturday && targetDate.DayOfWeek != DayOfWeek.Sunday);
 
             if (!hasCafeteria)
             {
-                return new CafeteriaDailyGuaranteedModel
-                {
-                    Date = date,
-                    HasCafeteria = false,
-                    HasConfirmedMenu = false,
-                    Calories = 0,
-                    Protein = 0,
-                    Carbohydrates = 0,
-                    Fat = 0,
-                    Meals = new()
-                };
+                return targetDate.ToDailyGuaranteedModel(hasCafeteria: false, hasConfirmedMenu: false);
             }
 
-            var monday = GetWeekMonday(date);
+            var monday = GetWeekMonday(targetDate);
             var menu = await _unitOfWork.CafeteriaMenu.GetByWeekStartDateAsync(monday, cancellationToken);
             var isConfirmed = menu != null && menu.Status.Equals("Confirmed", StringComparison.OrdinalIgnoreCase);
 
             if (menu == null || !isConfirmed)
             {
-                return new CafeteriaDailyGuaranteedModel
-                {
-                    Date = date,
-                    HasCafeteria = true,
-                    HasConfirmedMenu = false,
-                    Calories = 0,
-                    Protein = 0,
-                    Carbohydrates = 0,
-                    Fat = 0,
-                    Meals = new()
-                };
+                return targetDate.ToDailyGuaranteedModel(hasCafeteria: true, hasConfirmedMenu: false);
             }
 
-            var dailyMeals = menu.Meals.Where(m => m.Date == date).ToList();
-            var guaranteedMeals = new List<CafeteriaMealGuaranteedModel>();
-
-            decimal totalCalories = 0;
-            decimal totalProtein = 0;
-            decimal totalCarbs = 0;
-            decimal totalFat = 0;
-
-            foreach (var meal in dailyMeals)
-            {
-                var profile = PlateProfileExtensions.ParseOrDefault(meal.PlateProfile);
-                var multiplier = profile.GetMultiplier();
-
-                var mealCalories = meal.Items.Sum(i => i.Food != null ? (i.Food.Calories * i.ServingGrams / 100m) : 0m);
-                var mealProtein = meal.Items.Sum(i => i.Food != null ? (i.Food.Protein * i.ServingGrams / 100m) : 0m);
-                var mealCarbs = meal.Items.Sum(i => i.Food != null ? (i.Food.Carbohydrates * i.ServingGrams / 100m) : 0m);
-                var mealFat = meal.Items.Sum(i => i.Food != null ? (i.Food.Fat * i.ServingGrams / 100m) : 0m);
-
-                var guaranteedCalories = Math.Round(mealCalories * multiplier, 2);
-                var guaranteedProtein = Math.Round(mealProtein * multiplier, 2);
-                var guaranteedCarbs = Math.Round(mealCarbs * multiplier, 2);
-                var guaranteedFat = Math.Round(mealFat * multiplier, 2);
-
-                totalCalories += guaranteedCalories;
-                totalProtein += guaranteedProtein;
-                totalCarbs += guaranteedCarbs;
-                totalFat += guaranteedFat;
-
-                guaranteedMeals.Add(new CafeteriaMealGuaranteedModel
-                {
-                    MealUuid = meal.Uuid,
-                    MealType = meal.MealType,
-                    PlateProfile = profile.ToString(),
-                    Multiplier = multiplier,
-                    Calories = guaranteedCalories,
-                    Protein = guaranteedProtein,
-                    Carbohydrates = guaranteedCarbs,
-                    Fat = guaranteedFat
-                });
-            }
-
-            return new CafeteriaDailyGuaranteedModel
-            {
-                Date = date,
-                HasCafeteria = true,
-                HasConfirmedMenu = true,
-                Calories = Math.Round(totalCalories, 2),
-                Protein = Math.Round(totalProtein, 2),
-                Carbohydrates = Math.Round(totalCarbs, 2),
-                Fat = Math.Round(totalFat, 2),
-                Meals = guaranteedMeals
-            };
+            var dailyMeals = menu.Meals.Where(m => m.Date == targetDate).ToList();
+            return targetDate.ToDailyGuaranteedModel(hasCafeteria: true, hasConfirmedMenu: true, dailyMeals);
         }
         catch (Exception ex)
         {
@@ -521,10 +511,31 @@ public class CafeteriaMenuService : ICafeteriaMenuService
         }
     }
 
-    private async Task<CafeteriaMenuEntity?> GetMenuByMealIdAsync(int mealId, CancellationToken cancellationToken)
+    private async Task<CafeteriaMenuEntity?> ResolveMenuForMealIdAsync(int mealId, CancellationToken cancellationToken)
     {
-        var monday = GetWeekMonday(DateOnly.FromDateTime(DateTime.UtcNow));
+        var menu = await _unitOfWork.CafeteriaMenu.GetByMealIdAsync(mealId, cancellationToken);
+        if (menu != null)
+            return menu;
+
+        var today = await TimeZoneDateHelper.GetUserTodayAsync(_unitOfWork, cancellationToken);
+        var monday = GetWeekMonday(today);
         return await _unitOfWork.CafeteriaMenu.GetByWeekStartDateAsync(monday, cancellationToken);
+    }
+
+    private async Task<List<FoodEntity>> LoadAllFoodsAsync(CancellationToken cancellationToken)
+    {
+        var allFoods = new List<FoodEntity>();
+        var page = 1;
+        while (true)
+        {
+            var batch = (await _unitOfWork.Food.SearchAsync(null, page, 100, cancellationToken))?.ToList() ?? new List<FoodEntity>();
+            allFoods.AddRange(batch);
+            if (batch.Count < 100)
+                break;
+            page++;
+        }
+
+        return allFoods;
     }
 
     private async Task<Result<CafeteriaLlmExtractionModel>> ExtractWithLlmAsync(
@@ -625,39 +636,72 @@ Responda EXCLUSIVAMENTE em JSON no seguinte formato:
     {
         if (string.IsNullOrWhiteSpace(rawName)) return null;
 
-        var clean = rawName.Trim().ToLowerInvariant();
+        var foodList = foods as IList<FoodEntity> ?? foods.ToList();
+        var clean = RemoveDiacritics(rawName.Trim()).ToLowerInvariant();
 
-        // Exact match
-        var exact = foods.FirstOrDefault(f => f.Name.Equals(rawName, StringComparison.OrdinalIgnoreCase));
+        // Exact match (accent-insensitive)
+        var exact = foodList.FirstOrDefault(f =>
+            RemoveDiacritics(f.Name).Equals(clean, StringComparison.OrdinalIgnoreCase));
         if (exact != null) return exact;
 
-        // Substring match
-        var contains = foods.FirstOrDefault(f => clean.Contains(f.Name.ToLowerInvariant()) || f.Name.ToLowerInvariant().Contains(clean));
+        // Substring match (accent-insensitive)
+        var contains = foodList.FirstOrDefault(f =>
+        {
+            var normalizedFood = RemoveDiacritics(f.Name).ToLowerInvariant();
+            return clean.Contains(normalizedFood) || normalizedFood.Contains(clean);
+        });
         if (contains != null) return contains;
 
         // Common keyword heuristics
         if (clean.Contains("frango") || clean.Contains("galinha"))
-            return foods.FirstOrDefault(f => f.Name.Contains("frango", StringComparison.OrdinalIgnoreCase));
+            return foodList.FirstOrDefault(f => RemoveDiacritics(f.Name).Contains("frango", StringComparison.OrdinalIgnoreCase));
 
         if (clean.Contains("carne") || clean.Contains("patinho") || clean.Contains("bife") || clean.Contains("alcatra"))
-            return foods.FirstOrDefault(f => f.Name.Contains("carne", StringComparison.OrdinalIgnoreCase) || f.Name.Contains("patinho", StringComparison.OrdinalIgnoreCase));
+            return foodList.FirstOrDefault(f =>
+                RemoveDiacritics(f.Name).Contains("carne", StringComparison.OrdinalIgnoreCase) ||
+                RemoveDiacritics(f.Name).Contains("patinho", StringComparison.OrdinalIgnoreCase));
 
         if (clean.Contains("arroz"))
-            return foods.FirstOrDefault(f => f.Name.Contains("arroz", StringComparison.OrdinalIgnoreCase));
+            return foodList.FirstOrDefault(f => RemoveDiacritics(f.Name).Contains("arroz", StringComparison.OrdinalIgnoreCase));
 
-        if (clean.Contains("feijão") || clean.Contains("feijao"))
-            return foods.FirstOrDefault(f => f.Name.Contains("feijão", StringComparison.OrdinalIgnoreCase));
+        if (clean.Contains("feijao"))
+            return foodList.FirstOrDefault(f => RemoveDiacritics(f.Name).Contains("feijao", StringComparison.OrdinalIgnoreCase));
 
         if (clean.Contains("ovo"))
-            return foods.FirstOrDefault(f => f.Name.Contains("ovo", StringComparison.OrdinalIgnoreCase));
+            return foodList.FirstOrDefault(f => RemoveDiacritics(f.Name).Contains("ovo", StringComparison.OrdinalIgnoreCase));
 
         if (clean.Contains("batata"))
-            return foods.FirstOrDefault(f => f.Name.Contains("batata", StringComparison.OrdinalIgnoreCase));
+            return foodList.FirstOrDefault(f => RemoveDiacritics(f.Name).Contains("batata", StringComparison.OrdinalIgnoreCase));
 
-        if (clean.Contains("macarrão") || clean.Contains("macarrao") || clean.Contains("massa") || clean.Contains("espaguete"))
-            return foods.FirstOrDefault(f => f.Name.Contains("macarrão", StringComparison.OrdinalIgnoreCase));
+        if (clean.Contains("macarrao") || clean.Contains("massa") || clean.Contains("espaguete"))
+            return foodList.FirstOrDefault(f => RemoveDiacritics(f.Name).Contains("macarrao", StringComparison.OrdinalIgnoreCase));
+
+        if (clean.Contains("tilapia") || clean.Contains("peixe"))
+            return foodList.FirstOrDefault(f => RemoveDiacritics(f.Name).Contains("tilapia", StringComparison.OrdinalIgnoreCase));
+
+        if (clean.Contains("brocolis"))
+            return foodList.FirstOrDefault(f => RemoveDiacritics(f.Name).Contains("brocolis", StringComparison.OrdinalIgnoreCase));
 
         return null;
+    }
+
+    private static string RemoveDiacritics(string text)
+    {
+        if (string.IsNullOrEmpty(text))
+            return string.Empty;
+
+        var normalized = text.Normalize(NormalizationForm.FormD);
+        var sb = new StringBuilder(normalized.Length);
+
+        foreach (var c in normalized)
+        {
+            if (CharUnicodeInfo.GetUnicodeCategory(c) != UnicodeCategory.NonSpacingMark)
+            {
+                sb.Append(c);
+            }
+        }
+
+        return sb.ToString().Normalize(NormalizationForm.FormC);
     }
 
     private static string NormalizeMealType(string? mealType)

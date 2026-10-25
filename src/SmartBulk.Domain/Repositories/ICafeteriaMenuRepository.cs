@@ -4,9 +4,12 @@ namespace SmartBulk.Domain.Repositories;
 
 public interface ICafeteriaMenuRepository
 {
+    Task<CafeteriaMenuEntity?> GetByIdAsync(int id, CancellationToken cancellationToken = default);
+    Task<CafeteriaMenuEntity?> GetByMealIdAsync(int mealId, CancellationToken cancellationToken = default);
     Task<CafeteriaMenuEntity?> GetByWeekStartDateAsync(DateOnly weekStartDate, CancellationToken cancellationToken = default);
     Task<CafeteriaMenuEntity?> GetByUuidAsync(Guid uuid, CancellationToken cancellationToken = default);
     Task<CafeteriaMealEntity?> GetMealByUuidAsync(Guid uuid, CancellationToken cancellationToken = default);
+    Task<CafeteriaMealEntity?> GetMealByDateAndTypeAsync(DateOnly date, string mealType, CancellationToken cancellationToken = default);
     Task<CafeteriaMealItemEntity?> GetItemByUuidAsync(Guid uuid, CancellationToken cancellationToken = default);
     Task<int> CreateMenuAsync(CafeteriaMenuEntity menu, CancellationToken cancellationToken = default);
     Task<int> CreateMealAsync(CafeteriaMealEntity meal, CancellationToken cancellationToken = default);

@@ -37,6 +37,19 @@ public static class UserSettingsModelMap
         };
     }
 
+    public static UserSettingsEntity CreateDefaultEntity()
+    {
+        return new UserSettingsEntity
+        {
+            Uuid = Guid.NewGuid(),
+            CalorieTargetKcal = 3000,
+            ProteinTargetGPerKg = 2.0m,
+            TimeZoneId = "America/Sao_Paulo",
+            LunchReminderTime = new TimeSpan(12, 30, 0),
+            DinnerReminderTime = new TimeSpan(19, 30, 0)
+        };
+    }
+
     public static IEnumerable<UserSettingsModel> ToModel(this IEnumerable<UserSettingsEntity> entities)
     {
         return entities?.Select(e => e.ToModel()!).Where(m => m != null) ?? Enumerable.Empty<UserSettingsModel>();

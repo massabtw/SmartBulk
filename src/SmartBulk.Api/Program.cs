@@ -1,5 +1,7 @@
 using Microsoft.AspNetCore.Authorization;
+using Microsoft.OpenApi.Models;
 using SmartBulk.Api.Authentication;
+using SmartBulk.Api.BackgroundServices;
 using SmartBulk.Application;
 using SmartBulk.Infrastructure;
 using SmartBulk.Infrastructure.Database;
@@ -9,6 +11,10 @@ var builder = WebApplication.CreateBuilder(args);
 // Add layers to DI
 builder.Services.AddApplication();
 builder.Services.AddInfrastructure(builder.Configuration);
+
+// Add Hosted Services
+builder.Services.AddHostedService<TelegramPollingHostedService>();
+builder.Services.AddHostedService<CafeteriaReminderHostedService>();
 
 // Add Authentication and Authorization
 builder.Services.AddAuthentication(options =>
@@ -27,6 +33,39 @@ builder.Services.AddAuthorization(options =>
 });
 
 builder.Services.AddControllers();
+builder.Services.AddEndpointsApiExplorer();
+builder.Services.AddSwaggerGen(c =>
+{
+    c.SwaggerDoc("v1", new OpenApiInfo
+    {
+        Title = "SmartBulk API",
+        Version = "v1",
+        Description = "API de automação nutricional e tracking de refeições do SmartBulk"
+    });
+
+    c.AddSecurityDefinition("ApiKey", new OpenApiSecurityScheme
+    {
+        Description = "Chave de API. Informe no cabeçalho X-Api-Key.",
+        In = ParameterLocation.Header,
+        Name = "X-Api-Key",
+        Type = SecuritySchemeType.ApiKey
+    });
+
+    c.AddSecurityRequirement(new OpenApiSecurityRequirement
+    {
+        {
+            new OpenApiSecurityScheme
+            {
+                Reference = new OpenApiReference
+                {
+                    Type = ReferenceType.SecurityScheme,
+                    Id = "ApiKey"
+                }
+            },
+            Array.Empty<string>()
+        }
+    });
+});
 
 var app = builder.Build();
 
@@ -39,10 +78,25 @@ if (!string.IsNullOrWhiteSpace(connectionString))
     DatabaseMigrator.MigrateDatabase(connectionString, logger: app.Logger);
 }
 
+app.UseSwagger();
+app.UseSwaggerUI(c =>
+{
+    c.SwaggerEndpoint("/swagger/v1/swagger.json", "SmartBulk API v1");
+    c.RoutePrefix = "swagger";
+});
+
 app.UseRouting();
 
 app.UseAuthentication();
 app.UseAuthorization();
+
+app.MapGet("/", () => Results.Ok(new
+{
+    name = "SmartBulk API",
+    status = "running",
+    swagger = "/swagger",
+    frontend = "http://localhost:3000"
+})).AllowAnonymous();
 
 app.MapControllers();
 

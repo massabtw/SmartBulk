@@ -4,12 +4,12 @@
 
 **Blocked by:** 09: Perfil de prato e HasCafeteria; 11: Templates de refeição
 
-**Status:** ready-for-agent
+**Status:** done
 
 Padrões: seguir `.agents/skills/backend/SKILL.md` e `.agents/skills/mandatory-rules.md` (Model, `XModelMap`, `Result<T>`, `UnitOfWork`, `AddTransient`, DDL com Id/Uuid/CreatedAt/UpdatedAt/Deleted, soft delete). Sem EF Core e sem AutoMapper. Contexto: `../spec.md`.
 
-- [ ] Tabelas do plano semanal e dos itens (data, refeição, template)
-- [ ] Criar e editar o plano de uma semana (segunda a domingo)
-- [ ] Consulta indica quais refeições faltam preencher, considerando `HasCafeteria` de cada dia
-- [ ] Total nutricional do dia planejado
-- [ ] Testes do service e de integração
+- [x] Tabelas do plano semanal e dos itens (data, refeição, template)
+- [x] Criar e editar o plano de uma semana (segunda a domingo)
+- [x] Consulta indica quais refeições faltam preencher, considerando `HasCafeteria` de cada dia
+- [x] Total nutricional do dia planejado
+- [x] Testes do service e de integração

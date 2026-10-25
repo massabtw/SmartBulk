@@ -3,7 +3,6 @@ using Microsoft.Extensions.Logging;
 using SmartBulk.Application.Interfaces;
 using SmartBulk.Application.Mappers;
 using SmartBulk.Application.Models;
-using SmartBulk.Domain.Entities;
 using SmartBulk.Domain.Results;
 using SmartBulk.Domain.UnitOfWorks;
 
@@ -32,15 +31,7 @@ public class UserSettingsService : IUserSettingsService
             var entity = await _unitOfWork.UserSettings.GetAsync(cancellationToken);
             if (entity is null)
             {
-                var defaultEntity = new UserSettingsEntity
-                {
-                    CalorieTargetKcal = 3000,
-                    ProteinTargetGPerKg = 2.0m,
-                    TimeZoneId = "America/Sao_Paulo",
-                    LunchReminderTime = new TimeSpan(12, 30, 0),
-                    DinnerReminderTime = new TimeSpan(19, 30, 0)
-                };
-
+                var defaultEntity = UserSettingsModelMap.CreateDefaultEntity();
                 var id = await _unitOfWork.UserSettings.CreateAsync(defaultEntity, cancellationToken);
                 defaultEntity.Id = id;
 

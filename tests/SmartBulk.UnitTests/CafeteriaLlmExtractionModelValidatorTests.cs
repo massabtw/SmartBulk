@@ -1,6 +1,6 @@
 using FluentAssertions;
-using SmartBulk.Application.Models;
 using SmartBulk.Application.Validations;
+using SmartBulk.Domain.Http.Llm.Models;
 using Xunit;
 
 namespace SmartBulk.UnitTests;
@@ -36,6 +36,29 @@ public class CafeteriaLlmExtractionModelValidatorTests
     public void Validate_WhenNoMeals_Fails()
     {
         var model = new CafeteriaLlmExtractionModel();
+        var result = _validator.Validate(model);
+        result.IsValid.Should().BeFalse();
+    }
+
+    [Fact]
+    public void Validate_WhenDateNotValidIsoDate_Fails()
+    {
+        var model = new CafeteriaLlmExtractionModel
+        {
+            Meals = new List<CafeteriaLlmMealExtractionModel>
+            {
+                new()
+                {
+                    Date = "Segunda-feira",
+                    MealType = "Lunch",
+                    Items = new List<CafeteriaLlmItemExtractionModel>
+                    {
+                        new() { Name = "Arroz", Grams = 150 }
+                    }
+                }
+            }
+        };
+
         var result = _validator.Validate(model);
         result.IsValid.Should().BeFalse();
     }

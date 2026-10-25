@@ -1,3 +1,4 @@
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using SmartBulk.Api.Extensions;
 using SmartBulk.Application.Interfaces;
@@ -7,6 +8,7 @@ namespace SmartBulk.Api.Controllers;
 
 [ApiController]
 [Route("api/[controller]")]
+[Authorize]
 public class WeightController : ControllerBase
 {
     [HttpPost]
@@ -35,10 +37,7 @@ public class WeightController : ControllerBase
         [FromQuery] DateOnly? endDate,
         CancellationToken cancellationToken)
     {
-        var end = endDate ?? DateOnly.FromDateTime(DateTime.UtcNow);
-        var start = startDate ?? end.AddDays(-30);
-
-        var result = await service.GetHistoryAsync(start, end, cancellationToken);
+        var result = await service.GetHistoryAsync(startDate, endDate, cancellationToken);
         return result.Ok();
     }
 }

@@ -1,3 +1,4 @@
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using SmartBulk.Api.Extensions;
 using SmartBulk.Application.Interfaces;
@@ -7,6 +8,7 @@ namespace SmartBulk.Api.Controllers;
 
 [ApiController]
 [Route("api/[controller]")]
+[Authorize]
 public class CafeteriaMenuController : ControllerBase
 {
     [HttpPost("ingest")]
@@ -16,12 +18,7 @@ public class CafeteriaMenuController : ControllerBase
         CancellationToken cancellationToken)
     {
         var result = await service.IngestMenuAsync(model, cancellationToken);
-        if (result.Success && result.Data != null)
-        {
-            return result.Created($"/api/CafeteriaMenu/{result.Data.Uuid}");
-        }
-
-        return result.Created();
+        return result.Created(data => $"/api/CafeteriaMenu/{data.Uuid}");
     }
 
     [HttpGet]
@@ -30,8 +27,7 @@ public class CafeteriaMenuController : ControllerBase
         [FromQuery] DateOnly? date,
         CancellationToken cancellationToken)
     {
-        var targetDate = date ?? DateOnly.FromDateTime(DateTime.UtcNow);
-        var result = await service.GetMenuByDateAsync(targetDate, cancellationToken);
+        var result = await service.GetMenuByDateAsync(date, cancellationToken);
         return result.Ok();
     }
 
@@ -108,14 +104,23 @@ public class CafeteriaMenuController : ControllerBase
         return result.Ok();
     }
 
+    [HttpPut("meals/profile")]
+    public async Task<IActionResult> UpdateMealPlateProfileByDate(
+        [FromServices] ICafeteriaMenuService service,
+        [FromBody] CafeteriaMealPlateProfileByDateUpdateModel model,
+        CancellationToken cancellationToken)
+    {
+        var result = await service.UpdateMealPlateProfileByDateAsync(model, cancellationToken);
+        return result.Ok();
+    }
+
     [HttpGet("day-override")]
     public async Task<IActionResult> GetDayOverride(
         [FromServices] ICafeteriaMenuService service,
         [FromQuery] DateOnly? date,
         CancellationToken cancellationToken)
     {
-        var targetDate = date ?? DateOnly.FromDateTime(DateTime.UtcNow);
-        var result = await service.GetDayOverrideAsync(targetDate, cancellationToken);
+        var result = await service.GetDayOverrideAsync(date, cancellationToken);
         return result.Ok();
     }
 
@@ -145,8 +150,7 @@ public class CafeteriaMenuController : ControllerBase
         [FromQuery] DateOnly? date,
         CancellationToken cancellationToken)
     {
-        var targetDate = date ?? DateOnly.FromDateTime(DateTime.UtcNow);
-        var result = await service.GetDailyGuaranteedAsync(targetDate, cancellationToken);
+        var result = await service.GetDailyGuaranteedAsync(date, cancellationToken);
         return result.Ok();
     }
 }

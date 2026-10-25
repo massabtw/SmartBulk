@@ -1,7 +1,5 @@
 using FluentAssertions;
-using Microsoft.Data.SqlClient;
 using SmartBulk.Domain.Entities;
-using SmartBulk.Infrastructure.Database;
 using SmartBulk.Infrastructure.Repositories;
 using SmartBulk.Infrastructure.UnitOfWorks;
 using Xunit;
@@ -10,36 +8,14 @@ namespace SmartBulk.IntegrationTests;
 
 public class WeightAndCreatineRepositoryIntegrationTests
 {
-    private const string LocalDbConnection = "Server=(localdb)\\MSSQLLocalDB;Database=SmartBulk_IntegrationTest;Trusted_Connection=True;TrustServerCertificate=True;";
-    private const string DockerConnection = "Server=localhost,1433;Database=SmartBulk_IntegrationTest;User Id=sa;Password=Your_Strong_Password123!;TrustServerCertificate=True;Connect Timeout=3;";
-
     [Fact]
     public async Task WeightAndCreatineRepository_WhenSqlServerAvailable_PerformsUpsertAndHistoryCorrectly()
     {
-        string? activeConnection = null;
-
-        foreach (var connStr in new[] { LocalDbConnection, DockerConnection })
-        {
-            try
-            {
-                using var conn = new SqlConnection(connStr);
-                await conn.OpenAsync();
-                activeConnection = connStr;
-                break;
-            }
-            catch
-            {
-                // Try next
-            }
-        }
-
+        var activeConnection = await TestDatabaseHelper.TryGetActiveConnectionAsync();
         if (activeConnection == null)
         {
             return;
         }
-
-        // Apply migrations
-        DatabaseMigrator.MigrateDatabase(activeConnection);
 
         var uow = new UnitOfWorkApp(activeConnection);
         var weightRepo = new WeightLogRepository(uow);

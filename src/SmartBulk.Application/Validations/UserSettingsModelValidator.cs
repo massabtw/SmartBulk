@@ -6,6 +6,8 @@ namespace SmartBulk.Application.Validations;
 
 public class UserSettingsModelValidator : AbstractValidator<UserSettingsModel>
 {
+    private static readonly string[] AllowedTimeFormats = [@"hh\:mm", @"h\:mm", @"hh\:mm\:ss", @"h\:mm\:ss"];
+
     public UserSettingsModelValidator()
     {
         RuleFor(x => x.CalorieTargetKcal)
@@ -40,9 +42,10 @@ public class UserSettingsModelValidator : AbstractValidator<UserSettingsModel>
         if (string.IsNullOrWhiteSpace(value))
             return false;
 
-        return TimeSpan.TryParseExact(value, @"hh\:mm", CultureInfo.InvariantCulture, out _)
-            || TimeSpan.TryParseExact(value, @"h\:mm", CultureInfo.InvariantCulture, out _)
-            || TimeSpan.TryParse(value, out _);
+        if (!TimeSpan.TryParseExact(value.Trim(), AllowedTimeFormats, CultureInfo.InvariantCulture, out var ts))
+            return false;
+
+        return ts >= TimeSpan.Zero && ts < TimeSpan.FromDays(1);
     }
 
     private static bool BeAValidTimeZone(string? value)

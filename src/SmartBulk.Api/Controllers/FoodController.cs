@@ -1,3 +1,4 @@
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using SmartBulk.Api.Extensions;
 using SmartBulk.Application.Interfaces;
@@ -7,6 +8,7 @@ namespace SmartBulk.Api.Controllers;
 
 [ApiController]
 [Route("api/[controller]")]
+[Authorize]
 public class FoodController : ControllerBase
 {
     [HttpGet]
@@ -16,6 +18,15 @@ public class FoodController : ControllerBase
         CancellationToken cancellationToken)
     {
         var result = await service.SearchAsync(query, cancellationToken);
+        return result.Ok();
+    }
+
+    [HttpGet("favorites")]
+    public async Task<IActionResult> GetFavorites(
+        [FromServices] IFoodService service,
+        CancellationToken cancellationToken)
+    {
+        var result = await service.GetFavoritesAsync(cancellationToken);
         return result.Ok();
     }
 
@@ -36,12 +47,7 @@ public class FoodController : ControllerBase
         CancellationToken cancellationToken)
     {
         var result = await service.CreateCustomAsync(model, cancellationToken);
-        if (result.Success && result.Data != null)
-        {
-            return result.Created($"/api/Food/{result.Data.Uuid}");
-        }
-
-        return result.Created();
+        return result.Created(data => $"/api/Food/{data.Uuid}");
     }
 
     [HttpPut("{uuid}")]
@@ -52,6 +58,17 @@ public class FoodController : ControllerBase
         CancellationToken cancellationToken)
     {
         var result = await service.UpdateCustomAsync(uuid, model, cancellationToken);
+        return result.Ok();
+    }
+
+    [HttpPut("{uuid}/favorite")]
+    public async Task<IActionResult> SetFavorite(
+        [FromServices] IFoodService service,
+        [FromRoute] Guid uuid,
+        [FromBody] FoodFavoriteUpdateModel model,
+        CancellationToken cancellationToken)
+    {
+        var result = await service.SetFavoriteAsync(uuid, model.IsFavorite, cancellationToken);
         return result.Ok();
     }
 

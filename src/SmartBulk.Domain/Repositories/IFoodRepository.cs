@@ -11,4 +11,6 @@ public interface IFoodRepository
     Task<int> CreateAsync(FoodEntity entity, CancellationToken cancellationToken = default);
     Task<bool> UpdateAsync(FoodEntity entity, CancellationToken cancellationToken = default);
     Task<bool> DeleteAsync(Guid uuid, CancellationToken cancellationToken = default);
+    Task<bool> SetFavoriteAsync(Guid uuid, bool isFavorite, CancellationToken cancellationToken = default);
+    Task<IEnumerable<FoodEntity>> GetFavoritesAsync(CancellationToken cancellationToken = default);
 }

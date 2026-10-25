@@ -7,6 +7,7 @@ using SmartBulk.Application.Services;
 using SmartBulk.Application.Validations;
 using SmartBulk.Domain.Entities;
 using SmartBulk.Domain.Http.Llm;
+using SmartBulk.Domain.Http.Llm.Models;
 using SmartBulk.Domain.Repositories;
 using SmartBulk.Domain.Results;
 using SmartBulk.Domain.UnitOfWorks;
@@ -39,7 +40,8 @@ public class CafeteriaMenuServiceTests
         var catalogFoods = new List<FoodEntity>
         {
             new() { Id = 1, Name = "Arroz branco cozido", Calories = 128, Protein = 2.5m },
-            new() { Id = 2, Name = "Peito de frango grelhado", Calories = 159, Protein = 32m }
+            new() { Id = 2, Name = "Peito de frango grelhado", Calories = 159, Protein = 32m },
+            new() { Id = 3, Name = "Tilápia filé grelhado", Calories = 128, Protein = 26.1m }
         };
 
         _foodRepoMock.Setup(f => f.SearchAsync(null, 1, 100, It.IsAny<CancellationToken>()))
@@ -52,7 +54,7 @@ public class CafeteriaMenuServiceTests
               ""mealType"": ""Lunch"",
               ""items"": [
                 { ""name"": ""Arroz branco cozido"", ""grams"": 150 },
-                { ""name"": ""Peito de frango grelhado"", ""grams"": 150 },
+                { ""name"": ""Tilapia file grelhado"", ""grams"": 150 },
                 { ""name"": ""Sobremesa exótica desconhecida"", ""grams"": 80 }
               ]
             }
@@ -84,7 +86,7 @@ public class CafeteriaMenuServiceTests
 
         var result = await service.IngestMenuAsync(new CafeteriaMenuIngestModel
         {
-            Text = "Cardápio Segunda: Arroz, Frango e Sobremesa",
+            Text = "Cardápio Segunda: Arroz, Tilápia e Sobremesa",
             WeekStartDate = weekStart
         });
 
@@ -94,8 +96,9 @@ public class CafeteriaMenuServiceTests
 
         _menuRepoMock.Verify(m => m.CreateMenuAsync(It.Is<CafeteriaMenuEntity>(e => e.Status == "Draft" && e.WeekStartDate == weekStart), It.IsAny<CancellationToken>()), Times.Once);
 
-        // Verify items were created with correct matching
+        // Verify items were created with correct matching (including accent-insensitive match for Tilapia)
         _menuRepoMock.Verify(m => m.CreateMealItemAsync(It.Is<CafeteriaMealItemEntity>(i => i.RawName == "Arroz branco cozido" && i.FoodId == 1 && !i.IsPending), It.IsAny<CancellationToken>()), Times.Once);
+        _menuRepoMock.Verify(m => m.CreateMealItemAsync(It.Is<CafeteriaMealItemEntity>(i => i.RawName == "Tilapia file grelhado" && i.FoodId == 3 && !i.IsPending), It.IsAny<CancellationToken>()), Times.Once);
         _menuRepoMock.Verify(m => m.CreateMealItemAsync(It.Is<CafeteriaMealItemEntity>(i => i.RawName == "Sobremesa exótica desconhecida" && i.FoodId == null && i.IsPending), It.IsAny<CancellationToken>()), Times.Once);
     }
 
@@ -148,6 +151,159 @@ public class CafeteriaMenuServiceTests
 
         result.Success.Should().BeTrue();
         _llmClientMock.Verify(l => l.GenerateCompletionAsync(It.IsAny<string>(), It.IsAny<string>(), true, It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Exactly(2));
+    }
+
+    [Fact]
+    public async Task UpdateItemAsync_WhenDraftMenu_UpdatesGramsAndResolvesFood()
+    {
+        var itemUuid = Guid.NewGuid();
+        var foodUuid = Guid.NewGuid();
+
+        _menuRepoMock.Setup(m => m.GetItemByUuidAsync(itemUuid, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new CafeteriaMealItemEntity
+            {
+                Id = 100,
+                Uuid = itemUuid,
+                CafeteriaMealId = 10,
+                RawName = "Item pendente",
+                ServingGrams = 100m,
+                IsPending = true
+            });
+
+        _menuRepoMock.Setup(m => m.GetByMealIdAsync(10, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new CafeteriaMenuEntity { Id = 1, Status = "Draft" });
+
+        _foodRepoMock.Setup(f => f.GetByUuidAsync(foodUuid, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new FoodEntity { Id = 5, Uuid = foodUuid, Name = "Arroz branco cozido", Calories = 128m, Protein = 2.5m });
+
+        _menuRepoMock.Setup(m => m.UpdateMealItemAsync(It.IsAny<CafeteriaMealItemEntity>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(true);
+
+        var service = new CafeteriaMenuService(
+            _uowMock.Object,
+            _llmClientMock.Object,
+            _ingestValidator,
+            _extractionValidator,
+            _loggerMock.Object);
+
+        var result = await service.UpdateItemAsync(itemUuid, new CafeteriaMealItemUpdateModel
+        {
+            FoodUuid = foodUuid,
+            ServingGrams = 200m,
+            RawName = "Arroz ajustado"
+        });
+
+        result.Success.Should().BeTrue();
+        _menuRepoMock.Verify(m => m.UpdateMealItemAsync(
+            It.Is<CafeteriaMealItemEntity>(i => i.ServingGrams == 200m && i.FoodId == 5 && !i.IsPending && i.RawName == "Arroz ajustado"),
+            It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [Fact]
+    public async Task UpdateItemAsync_WhenConfirmedMenu_ReturnsFailure()
+    {
+        var itemUuid = Guid.NewGuid();
+
+        _menuRepoMock.Setup(m => m.GetItemByUuidAsync(itemUuid, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new CafeteriaMealItemEntity
+            {
+                Id = 100,
+                Uuid = itemUuid,
+                CafeteriaMealId = 10,
+                RawName = "Arroz",
+                ServingGrams = 150m
+            });
+
+        _menuRepoMock.Setup(m => m.GetByMealIdAsync(10, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new CafeteriaMenuEntity { Id = 1, Status = "Confirmed" });
+
+        var service = new CafeteriaMenuService(
+            _uowMock.Object,
+            _llmClientMock.Object,
+            _ingestValidator,
+            _extractionValidator,
+            _loggerMock.Object);
+
+        var result = await service.UpdateItemAsync(itemUuid, new CafeteriaMealItemUpdateModel
+        {
+            ServingGrams = 200m
+        });
+
+        result.Success.Should().BeFalse();
+        result.Errors.Should().Contain(e => e.Contains("Cardápio confirmado"));
+        _menuRepoMock.Verify(m => m.UpdateMealItemAsync(It.IsAny<CafeteriaMealItemEntity>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task AddItemAsync_WhenConfirmedMenuOnWednesday_ReturnsFailure()
+    {
+        var mealUuid = Guid.NewGuid();
+        var wednesday = new DateOnly(2026, 10, 28); // Wednesday
+
+        _menuRepoMock.Setup(m => m.GetMealByUuidAsync(mealUuid, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new CafeteriaMealEntity
+            {
+                Id = 10,
+                Uuid = mealUuid,
+                CafeteriaMenuId = 1,
+                Date = wednesday,
+                MealType = "Lunch"
+            });
+
+        _menuRepoMock.Setup(m => m.GetByIdAsync(1, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new CafeteriaMenuEntity
+            {
+                Id = 1,
+                WeekStartDate = new DateOnly(2026, 10, 26),
+                Status = "Confirmed"
+            });
+
+        var service = new CafeteriaMenuService(
+            _uowMock.Object,
+            _llmClientMock.Object,
+            _ingestValidator,
+            _extractionValidator,
+            _loggerMock.Object);
+
+        var result = await service.AddItemAsync(mealUuid, new CafeteriaMealItemCreateModel
+        {
+            RawName = "Feijão",
+            ServingGrams = 100m
+        });
+
+        result.Success.Should().BeFalse();
+        result.Errors.Should().Contain(e => e.Contains("Cardápio confirmado"));
+        _menuRepoMock.Verify(m => m.CreateMealItemAsync(It.IsAny<CafeteriaMealItemEntity>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task DeleteItemAsync_WhenConfirmedMenu_ReturnsFailure()
+    {
+        var itemUuid = Guid.NewGuid();
+
+        _menuRepoMock.Setup(m => m.GetItemByUuidAsync(itemUuid, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new CafeteriaMealItemEntity
+            {
+                Id = 100,
+                Uuid = itemUuid,
+                CafeteriaMealId = 10
+            });
+
+        _menuRepoMock.Setup(m => m.GetByMealIdAsync(10, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new CafeteriaMenuEntity { Id = 1, Status = "Confirmed" });
+
+        var service = new CafeteriaMenuService(
+            _uowMock.Object,
+            _llmClientMock.Object,
+            _ingestValidator,
+            _extractionValidator,
+            _loggerMock.Object);
+
+        var result = await service.DeleteItemAsync(itemUuid);
+
+        result.Success.Should().BeFalse();
+        result.Errors.Should().Contain(e => e.Contains("Cardápio confirmado"));
+        _menuRepoMock.Verify(m => m.DeleteMealItemAsync(It.IsAny<Guid>(), It.IsAny<CancellationToken>()), Times.Never);
     }
 
     [Fact]
@@ -294,6 +450,45 @@ public class CafeteriaMenuServiceTests
         result.Success.Should().BeTrue();
         result.Data!.PlateProfile.Should().Be("Generous");
         _menuRepoMock.Verify(m => m.UpdateMealPlateProfileAsync(10, "Generous", It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [Fact]
+    public async Task UpdateMealPlateProfileByDateAsync_WhenCalled_UpdatesMealProfile()
+    {
+        var date = new DateOnly(2026, 10, 28);
+        var mealUuid = Guid.NewGuid();
+        var meal = new CafeteriaMealEntity
+        {
+            Id = 12,
+            Uuid = mealUuid,
+            Date = date,
+            MealType = "Lunch",
+            PlateProfile = "Standard"
+        };
+
+        _menuRepoMock.Setup(m => m.GetMealByDateAndTypeAsync(date, "Lunch", It.IsAny<CancellationToken>()))
+            .ReturnsAsync(meal);
+
+        _menuRepoMock.Setup(m => m.UpdateMealPlateProfileAsync(12, "Small", It.IsAny<CancellationToken>()))
+            .ReturnsAsync(true);
+
+        var service = new CafeteriaMenuService(
+            _uowMock.Object,
+            _llmClientMock.Object,
+            _ingestValidator,
+            _extractionValidator,
+            _loggerMock.Object);
+
+        var result = await service.UpdateMealPlateProfileByDateAsync(new CafeteriaMealPlateProfileByDateUpdateModel
+        {
+            Date = date,
+            MealType = "Almoço",
+            PlateProfile = "Prato ruim"
+        });
+
+        result.Success.Should().BeTrue();
+        result.Data!.PlateProfile.Should().Be("Small");
+        _menuRepoMock.Verify(m => m.UpdateMealPlateProfileAsync(12, "Small", It.IsAny<CancellationToken>()), Times.Once);
     }
 
     [Fact]

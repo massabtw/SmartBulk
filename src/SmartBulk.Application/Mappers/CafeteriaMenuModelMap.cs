@@ -1,5 +1,6 @@
 using SmartBulk.Application.Models;
 using SmartBulk.Domain.Entities;
+using SmartBulk.Domain.Http.Llm.Models;
 using SmartBulk.Domain.Nutrition;
 
 namespace SmartBulk.Application.Mappers;
@@ -66,5 +67,125 @@ public static class CafeteriaMenuModelMap
         }
 
         return model;
+    }
+
+    public static CafeteriaMenuEntity ToEntity(this DateOnly weekStartDate, string status = "Draft")
+    {
+        return new CafeteriaMenuEntity
+        {
+            Uuid = Guid.NewGuid(),
+            WeekStartDate = weekStartDate,
+            Status = status
+        };
+    }
+
+    public static CafeteriaMealEntity ToEntity(this CafeteriaLlmMealExtractionModel model, int menuId, DateOnly mealDate, string normalizedMealType)
+    {
+        return new CafeteriaMealEntity
+        {
+            Uuid = Guid.NewGuid(),
+            CafeteriaMenuId = menuId,
+            Date = mealDate,
+            MealType = normalizedMealType,
+            PlateProfile = "Standard"
+        };
+    }
+
+    public static CafeteriaMealItemEntity ToEntity(this CafeteriaLlmItemExtractionModel model, int mealId, FoodEntity? matchedFood)
+    {
+        return new CafeteriaMealItemEntity
+        {
+            Uuid = Guid.NewGuid(),
+            CafeteriaMealId = mealId,
+            FoodId = matchedFood?.Id,
+            RawName = model.Name.Trim(),
+            ServingGrams = model.Grams > 0 ? model.Grams : 100m,
+            IsPending = matchedFood == null,
+            Food = matchedFood
+        };
+    }
+
+    public static CafeteriaMealItemEntity ToEntity(this CafeteriaMealItemCreateModel model, int mealId, FoodEntity? food)
+    {
+        return new CafeteriaMealItemEntity
+        {
+            Uuid = Guid.NewGuid(),
+            CafeteriaMealId = mealId,
+            FoodId = food?.Id,
+            RawName = model.RawName.Trim(),
+            ServingGrams = model.ServingGrams,
+            IsPending = food == null,
+            Food = food
+        };
+    }
+
+    public static CafeteriaMealGuaranteedModel ToGuaranteedModel(this CafeteriaMealEntity meal)
+    {
+        var profile = PlateProfileExtensions.ParseOrDefault(meal.PlateProfile);
+        var multiplier = profile.GetMultiplier();
+
+        var baseMealNutrition = NutritionalValue.Zero;
+        foreach (var item in meal.Items)
+        {
+            if (item.Food != null)
+            {
+                baseMealNutrition += NutritionalValue.FromPer100G(
+                    item.Food.Calories,
+                    item.Food.Protein,
+                    item.Food.Carbohydrates,
+                    item.Food.Fat,
+                    item.ServingGrams);
+            }
+        }
+
+        var guaranteed = NutritionCalculator.ApplyPlateProfile(baseMealNutrition, profile);
+
+        return new CafeteriaMealGuaranteedModel
+        {
+            MealUuid = meal.Uuid,
+            MealType = meal.MealType,
+            PlateProfile = profile.ToString(),
+            Multiplier = multiplier,
+            Calories = guaranteed.Calories,
+            Protein = guaranteed.Protein,
+            Carbohydrates = guaranteed.Carbohydrates,
+            Fat = guaranteed.Fat
+        };
+    }
+
+    public static CafeteriaDailyGuaranteedModel ToDailyGuaranteedModel(
+        this DateOnly date,
+        bool hasCafeteria,
+        bool hasConfirmedMenu,
+        IEnumerable<CafeteriaMealEntity>? dailyMeals = null)
+    {
+        if (!hasCafeteria || !hasConfirmedMenu || dailyMeals is null)
+        {
+            return new CafeteriaDailyGuaranteedModel
+            {
+                Date = date,
+                HasCafeteria = hasCafeteria,
+                HasConfirmedMenu = hasConfirmedMenu,
+                Calories = 0,
+                Protein = 0,
+                Carbohydrates = 0,
+                Fat = 0,
+                Meals = new()
+            };
+        }
+
+        var guaranteedMeals = dailyMeals.Select(m => m.ToGuaranteedModel()).ToList();
+
+        return new CafeteriaDailyGuaranteedModel
+        {
+            Date = date,
+            HasCafeteria = true,
+            HasConfirmedMenu = true,
+            Calories = Math.Round(guaranteedMeals.Sum(m => m.Calories), 2),
+            Protein = Math.Round(guaranteedMeals.Sum(m => m.Protein), 2),
+            Carbohydrates = Math.Round(guaranteedMeals.Sum(m => m.Carbohydrates), 2),
+            Fat = Math.Round(guaranteedMeals.Sum(m => m.Fat), 2),
+            Meals = guaranteedMeals
+        };
     }
 }

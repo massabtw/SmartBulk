@@ -1,7 +1,5 @@
 using FluentAssertions;
-using Microsoft.Data.SqlClient;
 using SmartBulk.Domain.Entities;
-using SmartBulk.Infrastructure.Database;
 using SmartBulk.Infrastructure.Repositories;
 using SmartBulk.Infrastructure.UnitOfWorks;
 using Xunit;
@@ -10,36 +8,14 @@ namespace SmartBulk.IntegrationTests;
 
 public class CafeteriaMenuRepositoryIntegrationTests
 {
-    private const string LocalDbConnection = "Server=(localdb)\\MSSQLLocalDB;Database=SmartBulk_IntegrationTest;Trusted_Connection=True;TrustServerCertificate=True;";
-    private const string DockerConnection = "Server=localhost,1433;Database=SmartBulk_IntegrationTest;User Id=sa;Password=Your_Strong_Password123!;TrustServerCertificate=True;Connect Timeout=3;";
-
     [Fact]
     public async Task CafeteriaMenuRepository_WhenSqlServerAvailable_PerformsPersistenceSuccessfully()
     {
-        string? activeConnection = null;
-
-        foreach (var connStr in new[] { LocalDbConnection, DockerConnection })
-        {
-            try
-            {
-                using var conn = new SqlConnection(connStr);
-                await conn.OpenAsync();
-                activeConnection = connStr;
-                break;
-            }
-            catch
-            {
-                // Try next
-            }
-        }
-
+        var activeConnection = await TestDatabaseHelper.TryGetActiveConnectionAsync();
         if (activeConnection == null)
         {
             return;
         }
-
-        // Apply migrations
-        DatabaseMigrator.MigrateDatabase(activeConnection);
 
         var uow = new UnitOfWorkApp(activeConnection);
         var repo = new CafeteriaMenuRepository(uow);
@@ -55,6 +31,7 @@ public class CafeteriaMenuRepositoryIntegrationTests
         };
         var menuId = await repo.CreateMenuAsync(menu);
         menuId.Should().BeGreaterThan(0);
+        menu.Uuid.Should().NotBeEmpty();
 
         // Create meal
         var meal = new CafeteriaMealEntity
@@ -66,6 +43,7 @@ public class CafeteriaMenuRepositoryIntegrationTests
         };
         var mealId = await repo.CreateMealAsync(meal);
         mealId.Should().BeGreaterThan(0);
+        meal.Uuid.Should().NotBeEmpty();
 
         // Get a food from TACO
         var tacoFoods = await foodRepo.SearchAsync("arroz", 1, 1);
@@ -82,6 +60,7 @@ public class CafeteriaMenuRepositoryIntegrationTests
         };
         var itemId = await repo.CreateMealItemAsync(item);
         itemId.Should().BeGreaterThan(0);
+        item.Uuid.Should().NotBeEmpty();
 
         // Retrieve full menu
         var loaded = await repo.GetByWeekStartDateAsync(monday);
@@ -90,6 +69,11 @@ public class CafeteriaMenuRepositoryIntegrationTests
         loaded.Meals.Should().ContainSingle();
         loaded.Meals[0].Items.Should().ContainSingle();
         loaded.Meals[0].Items[0].RawName.Should().Be("Arroz branco");
+
+        // Retrieve menu by mealId
+        var loadedByMeal = await repo.GetByMealIdAsync(mealId);
+        loadedByMeal.Should().NotBeNull();
+        loadedByMeal!.Id.Should().Be(menuId);
 
         // Update status
         var updated = await repo.UpdateStatusAsync(menuId, "Confirmed");

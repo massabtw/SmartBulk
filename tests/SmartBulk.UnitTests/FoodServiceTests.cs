@@ -64,48 +64,105 @@ public class FoodServiceTests
     }
 
     [Fact]
-    public async Task CreateCustomAsync_AlwaysSetsIsCustomToTrue()
+    public async Task GetByUuidAsync_WhenFound_ReturnsMappedFoodModel()
     {
-        var model = new FoodModel
+        var uuid = Guid.NewGuid();
+        var entity = new FoodEntity
         {
-            Name = "Minha Barra de Proteína",
-            Calories = 210,
-            Protein = 20,
-            Carbohydrates = 15,
-            Fat = 7,
-            IsCustom = false // Even if client passes false, service must enforce true
+            Id = 10,
+            Uuid = uuid,
+            Name = "Frango desfiado",
+            Calories = 165,
+            Protein = 31,
+            Carbohydrates = 0,
+            Fat = 3.6m
         };
 
-        _repoMock.Setup(r => r.CreateAsync(It.IsAny<FoodEntity>(), It.IsAny<CancellationToken>()))
-            .ReturnsAsync(10);
+        _repoMock.Setup(r => r.GetByUuidAsync(uuid, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(entity);
 
         var service = new FoodService(_uowMock.Object, _validator, _loggerMock.Object);
+        var result = await service.GetByUuidAsync(uuid);
+
+        result.Success.Should().BeTrue();
+        result.Data.Should().NotBeNull();
+        result.Data!.Uuid.Should().Be(uuid);
+        result.Data.Name.Should().Be("Frango desfiado");
+    }
+
+    [Fact]
+    public async Task CreateCustomAsync_WhenInvalid_ReturnsValidationErrors()
+    {
+        var service = new FoodService(_uowMock.Object, _validator, _loggerMock.Object);
+        var result = await service.CreateCustomAsync(new FoodModel { Name = "" });
+
+        result.Success.Should().BeFalse();
+        result.Errors.Should().NotBeEmpty();
+        _repoMock.Verify(r => r.CreateAsync(It.IsAny<FoodEntity>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task CreateCustomAsync_WhenValid_SetsIsCustomAndPersists()
+    {
+        _repoMock.Setup(r => r.CreateAsync(It.IsAny<FoodEntity>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(42);
+
+        var service = new FoodService(_uowMock.Object, _validator, _loggerMock.Object);
+        var model = new FoodModel
+        {
+            Name = "Pasta de amendoim caseira",
+            Calories = 588,
+            Protein = 25,
+            Carbohydrates = 20,
+            Fat = 50
+        };
+
         var result = await service.CreateCustomAsync(model);
 
         result.Success.Should().BeTrue();
         result.Data.Should().NotBeNull();
         result.Data!.IsCustom.Should().BeTrue();
-
-        _repoMock.Verify(r => r.CreateAsync(It.Is<FoodEntity>(e => e.IsCustom == true), It.IsAny<CancellationToken>()), Times.Once);
+        _repoMock.Verify(r => r.CreateAsync(It.Is<FoodEntity>(e => e.IsCustom && e.Name == model.Name), It.IsAny<CancellationToken>()), Times.Once);
     }
 
     [Fact]
-    public async Task UpdateCustomAsync_WhenFoodIsFromTaco_Fails()
+    public async Task UpdateCustomAsync_WhenFoodNotFound_ReturnsEntityNotFound()
+    {
+        var uuid = Guid.NewGuid();
+        _repoMock.Setup(r => r.GetByUuidAsync(uuid, It.IsAny<CancellationToken>()))
+            .ReturnsAsync((FoodEntity?)null);
+
+        var service = new FoodService(_uowMock.Object, _validator, _loggerMock.Object);
+        var result = await service.UpdateCustomAsync(uuid, new FoodModel { Name = "Teste" });
+
+        result.Success.Should().BeFalse();
+        result.Errors.Should().Contain(ErrorMessages.EntityNotFound);
+    }
+
+    [Fact]
+    public async Task UpdateCustomAsync_WhenFoodIsNotCustom_FailsWithPolicyMessage()
     {
         var uuid = Guid.NewGuid();
         var tacoFood = new FoodEntity
         {
             Id = 1,
             Uuid = uuid,
-            Name = "Arroz branco cozido",
-            IsCustom = false // TACO food
+            Name = "Arroz polido",
+            IsCustom = false
         };
 
         _repoMock.Setup(r => r.GetByUuidAsync(uuid, It.IsAny<CancellationToken>()))
             .ReturnsAsync(tacoFood);
 
         var service = new FoodService(_uowMock.Object, _validator, _loggerMock.Object);
-        var result = await service.UpdateCustomAsync(uuid, new FoodModel { Name = "Arroz alterado", Calories = 100 });
+        var result = await service.UpdateCustomAsync(uuid, new FoodModel
+        {
+            Name = "Arroz polido modificado",
+            Calories = 100,
+            Protein = 2,
+            Carbohydrates = 20,
+            Fat = 1
+        });
 
         result.Success.Should().BeFalse();
         result.Errors.Should().Contain("Alimentos da TACO não podem ser alterados.");
@@ -113,59 +170,49 @@ public class FoodServiceTests
     }
 
     [Fact]
-    public async Task UpdateCustomAsync_WhenFoodIsCustom_UpdatesSuccessfully()
+    public async Task UpdateCustomAsync_WhenFoodIsCustomAndValid_UpdatesSuccessfully()
     {
         var uuid = Guid.NewGuid();
         var customFood = new FoodEntity
         {
-            Id = 50,
+            Id = 99,
             Uuid = uuid,
-            Name = "Pão caseiro",
-            Calories = 250,
+            Name = "Shake caseiro",
             IsCustom = true
         };
 
-        var updatedFood = new FoodEntity
-        {
-            Id = 50,
-            Uuid = uuid,
-            Name = "Pão caseiro integral",
-            Calories = 220,
-            IsCustom = true
-        };
-
-        _repoMock.SetupSequence(r => r.GetByUuidAsync(uuid, It.IsAny<CancellationToken>()))
-            .ReturnsAsync(customFood)
-            .ReturnsAsync(updatedFood);
+        _repoMock.Setup(r => r.GetByUuidAsync(uuid, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(customFood);
 
         _repoMock.Setup(r => r.UpdateAsync(It.IsAny<FoodEntity>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(true);
 
         var service = new FoodService(_uowMock.Object, _validator, _loggerMock.Object);
-        var result = await service.UpdateCustomAsync(uuid, new FoodModel
+        var updateModel = new FoodModel
         {
-            Name = "Pão caseiro integral",
-            Calories = 220,
-            Protein = 8,
-            Carbohydrates = 40,
-            Fat = 3
-        });
+            Name = "Shake caseiro turbinado",
+            Calories = 600,
+            Protein = 40,
+            Carbohydrates = 80,
+            Fat = 10
+        };
+
+        var result = await service.UpdateCustomAsync(uuid, updateModel);
 
         result.Success.Should().BeTrue();
-        result.Data!.Name.Should().Be("Pão caseiro integral");
-        _repoMock.Verify(r => r.UpdateAsync(It.Is<FoodEntity>(e => e.Id == 50 && e.IsCustom == true), It.IsAny<CancellationToken>()), Times.Once);
+        _repoMock.Verify(r => r.UpdateAsync(It.Is<FoodEntity>(e => e.Id == 99 && e.Name == "Shake caseiro turbinado" && e.IsCustom), It.IsAny<CancellationToken>()), Times.Once);
     }
 
     [Fact]
-    public async Task DeleteCustomAsync_WhenFoodIsFromTaco_Fails()
+    public async Task DeleteCustomAsync_WhenFoodIsNotCustom_FailsWithPolicyMessage()
     {
         var uuid = Guid.NewGuid();
         var tacoFood = new FoodEntity
         {
-            Id = 2,
+            Id = 1,
             Uuid = uuid,
-            Name = "Feijão preto cozido",
-            IsCustom = false // TACO
+            Name = "Feijão preto",
+            IsCustom = false
         };
 
         _repoMock.Setup(r => r.GetByUuidAsync(uuid, It.IsAny<CancellationToken>()))
@@ -202,5 +249,57 @@ public class FoodServiceTests
 
         result.Success.Should().BeTrue();
         _repoMock.Verify(r => r.DeleteAsync(uuid, It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [Fact]
+    public async Task SetFavoriteAsync_WhenFoodNotFound_ReturnsEntityNotFound()
+    {
+        var uuid = Guid.NewGuid();
+        _repoMock.Setup(r => r.GetByUuidAsync(uuid, It.IsAny<CancellationToken>()))
+            .ReturnsAsync((FoodEntity?)null);
+
+        var service = new FoodService(_uowMock.Object, _validator, _loggerMock.Object);
+        var result = await service.SetFavoriteAsync(uuid, true);
+
+        result.Success.Should().BeFalse();
+        result.Errors.Should().Contain(ErrorMessages.EntityNotFound);
+    }
+
+    [Fact]
+    public async Task SetFavoriteAsync_WhenFound_UpdatesFavoriteSuccessfully()
+    {
+        var uuid = Guid.NewGuid();
+        var food = new FoodEntity { Id = 10, Uuid = uuid, Name = "Pasta de amendoim" };
+
+        _repoMock.Setup(r => r.GetByUuidAsync(uuid, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(food);
+        _repoMock.Setup(r => r.SetFavoriteAsync(uuid, true, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(true);
+
+        var service = new FoodService(_uowMock.Object, _validator, _loggerMock.Object);
+        var result = await service.SetFavoriteAsync(uuid, true);
+
+        result.Success.Should().BeTrue();
+        _repoMock.Verify(r => r.SetFavoriteAsync(uuid, true, It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [Fact]
+    public async Task GetFavoritesAsync_ReturnsMappedFavoriteFoods()
+    {
+        var favorites = new List<FoodEntity>
+        {
+            new() { Id = 1, Uuid = Guid.NewGuid(), Name = "Whey Protein", IsFavorite = true },
+            new() { Id = 2, Uuid = Guid.NewGuid(), Name = "Pasta de amendoim", IsFavorite = true }
+        };
+
+        _repoMock.Setup(r => r.GetFavoritesAsync(It.IsAny<CancellationToken>()))
+            .ReturnsAsync(favorites);
+
+        var service = new FoodService(_uowMock.Object, _validator, _loggerMock.Object);
+        var result = await service.GetFavoritesAsync();
+
+        result.Success.Should().BeTrue();
+        result.Data.Should().HaveCount(2);
+        result.Data!.Select(f => f.Name).Should().Contain(new[] { "Whey Protein", "Pasta de amendoim" });
     }
 }

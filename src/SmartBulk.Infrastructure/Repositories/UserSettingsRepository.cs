@@ -42,16 +42,22 @@ public class UserSettingsRepository : IUserSettingsRepository
 
     public async Task<int> CreateAsync(UserSettingsEntity entity, CancellationToken cancellationToken = default)
     {
+        if (entity.Uuid == Guid.Empty)
+        {
+            entity.Uuid = Guid.NewGuid();
+        }
+
         const string sql = @"
             INSERT INTO UserSettings 
-                (CalorieTargetKcal, ProteinTargetGPerKg, TimeZoneId, LunchReminderTime, DinnerReminderTime, CreatedAt, UpdatedAt, Deleted)
+                (Uuid, CalorieTargetKcal, ProteinTargetGPerKg, TimeZoneId, LunchReminderTime, DinnerReminderTime, CreatedAt, UpdatedAt, Deleted)
             OUTPUT Inserted.Id
             VALUES 
-                (@CalorieTargetKcal, @ProteinTargetGPerKg, @TimeZoneId, @LunchReminderTime, @DinnerReminderTime, @CreatedAt, @UpdatedAt, 0)";
+                (@Uuid, @CalorieTargetKcal, @ProteinTargetGPerKg, @TimeZoneId, @LunchReminderTime, @DinnerReminderTime, @CreatedAt, @UpdatedAt, 0)";
 
         var now = DateTimeOffset.UtcNow;
         var parameters = new
         {
+            entity.Uuid,
             entity.CalorieTargetKcal,
             entity.ProteinTargetGPerKg,
             entity.TimeZoneId,

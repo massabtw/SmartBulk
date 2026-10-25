@@ -1,8 +1,8 @@
 using Microsoft.Extensions.Logging;
+using SmartBulk.Application.Helpers;
 using SmartBulk.Application.Interfaces;
 using SmartBulk.Application.Mappers;
 using SmartBulk.Application.Models;
-using SmartBulk.Domain.Entities;
 using SmartBulk.Domain.Results;
 using SmartBulk.Domain.UnitOfWorks;
 
@@ -21,19 +21,28 @@ public class CreatineLogService : ICreatineLogService
         _logger = logger;
     }
 
+    public async Task<Result<CreatineLogModel>> SetCreatineAsync(CreatineLogModel model, CancellationToken cancellationToken = default)
+    {
+        var targetDate = model.Date == default
+            ? await TimeZoneDateHelper.GetUserTodayAsync(_unitOfWork, cancellationToken)
+            : model.Date;
+
+        return await SetCreatineAsync(targetDate, model.Taken, cancellationToken);
+    }
+
     public async Task<Result<CreatineLogModel>> SetCreatineAsync(DateOnly date, bool taken, CancellationToken cancellationToken = default)
     {
         try
         {
-            var entity = new CreatineLogEntity
-            {
-                Date = date,
-                Taken = taken
-            };
+            var targetDate = date == default
+                ? await TimeZoneDateHelper.GetUserTodayAsync(_unitOfWork, cancellationToken)
+                : date;
+
+            var entity = targetDate.ToEntity(taken);
 
             await _unitOfWork.CreatineLog.UpsertAsync(entity, cancellationToken);
 
-            var saved = await _unitOfWork.CreatineLog.GetByDateAsync(date, cancellationToken);
+            var saved = await _unitOfWork.CreatineLog.GetByDateAsync(targetDate, cancellationToken);
             return (saved ?? entity).ToModel()!;
         }
         catch (Exception ex)
@@ -43,16 +52,20 @@ public class CreatineLogService : ICreatineLogService
         }
     }
 
-    public async Task<Result<CreatineLogModel>> GetByDateAsync(DateOnly date, CancellationToken cancellationToken = default)
+    public async Task<Result<CreatineLogModel>> GetByDateAsync(DateOnly? date = null, CancellationToken cancellationToken = default)
     {
         try
         {
-            var entity = await _unitOfWork.CreatineLog.GetByDateAsync(date, cancellationToken);
+            var targetDate = date is null || date.Value == default
+                ? await TimeZoneDateHelper.GetUserTodayAsync(_unitOfWork, cancellationToken)
+                : date.Value;
+
+            var entity = await _unitOfWork.CreatineLog.GetByDateAsync(targetDate, cancellationToken);
             if (entity is null)
             {
                 return new CreatineLogModel
                 {
-                    Date = date,
+                    Date = targetDate,
                     Taken = false
                 };
             }
@@ -66,16 +79,24 @@ public class CreatineLogService : ICreatineLogService
         }
     }
 
-    public async Task<Result<IEnumerable<CreatineLogModel>>> GetHistoryAsync(DateOnly startDate, DateOnly endDate, CancellationToken cancellationToken = default)
+    public async Task<Result<IEnumerable<CreatineLogModel>>> GetHistoryAsync(DateOnly? startDate = null, DateOnly? endDate = null, CancellationToken cancellationToken = default)
     {
         try
         {
-            if (startDate > endDate)
+            var end = endDate is null || endDate.Value == default
+                ? await TimeZoneDateHelper.GetUserTodayAsync(_unitOfWork, cancellationToken)
+                : endDate.Value;
+
+            var start = startDate is null || startDate.Value == default
+                ? end.AddDays(-30)
+                : startDate.Value;
+
+            if (start > end)
             {
-                (startDate, endDate) = (endDate, startDate);
+                (start, end) = (end, start);
             }
 
-            var entities = await _unitOfWork.CreatineLog.GetHistoryAsync(startDate, endDate, cancellationToken);
+            var entities = await _unitOfWork.CreatineLog.GetHistoryAsync(start, end, cancellationToken);
             return entities.ToModel().ToList();
         }
         catch (Exception ex)

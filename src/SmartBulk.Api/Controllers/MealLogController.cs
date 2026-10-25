@@ -1,3 +1,4 @@
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using SmartBulk.Api.Extensions;
 using SmartBulk.Application.Interfaces;
@@ -7,6 +8,7 @@ namespace SmartBulk.Api.Controllers;
 
 [ApiController]
 [Route("api/[controller]")]
+[Authorize]
 public class MealLogController : ControllerBase
 {
     [HttpPost]
@@ -16,12 +18,17 @@ public class MealLogController : ControllerBase
         CancellationToken cancellationToken)
     {
         var result = await service.CreateMealLogAsync(model, cancellationToken);
-        if (result.Success && result.Data != null)
-        {
-            return result.Created($"/api/MealLog/{result.Data.Uuid}");
-        }
+        return result.Created(data => $"/api/MealLog/{data.Uuid}");
+    }
 
-        return result.Created();
+    [HttpPost("natural-language")]
+    public async Task<IActionResult> RegisterNaturalLanguage(
+        [FromServices] INaturalLanguageMealLogService service,
+        [FromBody] NaturalLanguageMealLogRequestModel model,
+        CancellationToken cancellationToken)
+    {
+        var result = await service.ProcessNaturalLanguageMealAsync(model, cancellationToken);
+        return result.Ok();
     }
 
     [HttpGet("{uuid}")]
@@ -40,8 +47,7 @@ public class MealLogController : ControllerBase
         [FromQuery] DateOnly? date,
         CancellationToken cancellationToken)
     {
-        var targetDate = date ?? DateOnly.FromDateTime(DateTime.UtcNow);
-        var result = await service.GetMealLogsByDateAsync(targetDate, cancellationToken);
+        var result = await service.GetMealLogsByDateAsync(date, cancellationToken);
         return result.Ok();
     }
 
@@ -80,8 +86,7 @@ public class MealLogController : ControllerBase
         [FromQuery] DateOnly? date,
         CancellationToken cancellationToken)
     {
-        var targetDate = date ?? DateOnly.FromDateTime(DateTime.UtcNow);
-        var result = await service.GetDailyGapOverviewAsync(targetDate, cancellationToken);
+        var result = await service.GetDailyGapOverviewAsync(date, cancellationToken);
         return result.Ok();
     }
 }

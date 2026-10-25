@@ -9,6 +9,12 @@ public class MealLogRepository : IMealLogRepository
 {
     private readonly UnitOfWorkApp _unitOfWork;
 
+    private const string SqlSelectItemWithFood = @"
+        SELECT item.Id, item.Uuid, item.MealLogId, item.FoodId, item.ServingGrams, item.Calories, item.Protein, item.Carbohydrates, item.Fat, item.CreatedAt, item.UpdatedAt, item.Deleted,
+               f.Id, f.Uuid, f.Name, f.Calories, f.Protein, f.Carbohydrates, f.Fat, f.IsCustom, f.IsFavorite, f.RawYieldFactor
+          FROM MealLogItem item
+          LEFT JOIN Food f ON f.Id = item.FoodId AND f.Deleted = 0";
+
     public MealLogRepository(UnitOfWorkApp unitOfWork)
     {
         _unitOfWork = unitOfWork;
@@ -66,23 +72,19 @@ public class MealLogRepository : IMealLogRepository
 
         var mealIds = meals.Select(m => m.Id).ToList();
 
-        const string sqlItems = @"
-            SELECT item.Id, item.Uuid, item.MealLogId, item.FoodId, item.ServingGrams, item.Calories, item.Protein, item.Carbohydrates, item.Fat, item.CreatedAt, item.UpdatedAt, item.Deleted,
-                   f.Id, f.Uuid, f.Name, f.Calories, f.Protein, f.Carbohydrates, f.Fat, f.IsCustom, f.RawYieldFactor
-              FROM MealLogItem item
-              LEFT JOIN Food f ON f.Id = item.FoodId AND f.Deleted = 0
+        const string sqlItems = SqlSelectItemWithFood + @"
              WHERE item.MealLogId IN @mealIds
                AND item.Deleted = 0";
 
-        var items = await _unitOfWork.Connection.QueryAsync<MealLogItemEntity, FoodEntity, MealLogItemEntity>(
+        var itemsCommand = new CommandDefinition(
             sqlItems,
-            (item, food) =>
-            {
-                item.Food = food;
-                return item;
-            },
             new { mealIds },
             transaction: _unitOfWork.Transaction,
+            cancellationToken: cancellationToken);
+
+        var items = await _unitOfWork.Connection.QueryAsync<MealLogItemEntity, FoodEntity, MealLogItemEntity>(
+            itemsCommand,
+            MapItemWithFood,
             splitOn: "Id");
 
         var itemsByMeal = items.GroupBy(i => i.MealLogId).ToDictionary(g => g.Key, g => g.ToList());
@@ -100,14 +102,20 @@ public class MealLogRepository : IMealLogRepository
 
     public async Task<int> CreateMealAsync(MealLogEntity meal, CancellationToken cancellationToken = default)
     {
+        if (meal.Uuid == Guid.Empty)
+        {
+            meal.Uuid = Guid.NewGuid();
+        }
+
         const string sql = @"
-            INSERT INTO MealLog (Date, LoggedAt, Name, TotalCalories, TotalProtein, TotalCarbohydrates, TotalFat, CreatedAt, UpdatedAt, Deleted)
+            INSERT INTO MealLog (Uuid, Date, LoggedAt, Name, TotalCalories, TotalProtein, TotalCarbohydrates, TotalFat, CreatedAt, UpdatedAt, Deleted)
             OUTPUT Inserted.Id
-            VALUES (@Date, @LoggedAt, @Name, @TotalCalories, @TotalProtein, @TotalCarbohydrates, @TotalFat, @CreatedAt, @UpdatedAt, 0)";
+            VALUES (@Uuid, @Date, @LoggedAt, @Name, @TotalCalories, @TotalProtein, @TotalCarbohydrates, @TotalFat, @CreatedAt, @UpdatedAt, 0)";
 
         var now = DateTimeOffset.UtcNow;
         var parameters = new
         {
+            meal.Uuid,
             Date = meal.Date.ToDateTime(TimeOnly.MinValue),
             meal.LoggedAt,
             meal.Name,
@@ -125,14 +133,20 @@ public class MealLogRepository : IMealLogRepository
 
     public async Task<int> CreateMealItemAsync(MealLogItemEntity item, CancellationToken cancellationToken = default)
     {
+        if (item.Uuid == Guid.Empty)
+        {
+            item.Uuid = Guid.NewGuid();
+        }
+
         const string sql = @"
-            INSERT INTO MealLogItem (MealLogId, FoodId, ServingGrams, Calories, Protein, Carbohydrates, Fat, CreatedAt, UpdatedAt, Deleted)
+            INSERT INTO MealLogItem (Uuid, MealLogId, FoodId, ServingGrams, Calories, Protein, Carbohydrates, Fat, CreatedAt, UpdatedAt, Deleted)
             OUTPUT Inserted.Id
-            VALUES (@MealLogId, @FoodId, @ServingGrams, @Calories, @Protein, @Carbohydrates, @Fat, @CreatedAt, @UpdatedAt, 0)";
+            VALUES (@Uuid, @MealLogId, @FoodId, @ServingGrams, @Calories, @Protein, @Carbohydrates, @Fat, @CreatedAt, @UpdatedAt, 0)";
 
         var now = DateTimeOffset.UtcNow;
         var parameters = new
         {
+            item.Uuid,
             item.MealLogId,
             item.FoodId,
             item.ServingGrams,
@@ -264,25 +278,27 @@ public class MealLogRepository : IMealLogRepository
 
     private async Task PopulateItemsAsync(MealLogEntity meal, CancellationToken cancellationToken)
     {
-        const string sqlItems = @"
-            SELECT item.Id, item.Uuid, item.MealLogId, item.FoodId, item.ServingGrams, item.Calories, item.Protein, item.Carbohydrates, item.Fat, item.CreatedAt, item.UpdatedAt, item.Deleted,
-                   f.Id, f.Uuid, f.Name, f.Calories, f.Protein, f.Carbohydrates, f.Fat, f.IsCustom, f.RawYieldFactor
-              FROM MealLogItem item
-              LEFT JOIN Food f ON f.Id = item.FoodId AND f.Deleted = 0
+        const string sqlItems = SqlSelectItemWithFood + @"
              WHERE item.MealLogId = @MealId
                AND item.Deleted = 0";
 
-        var items = await _unitOfWork.Connection.QueryAsync<MealLogItemEntity, FoodEntity, MealLogItemEntity>(
+        var command = new CommandDefinition(
             sqlItems,
-            (item, food) =>
-            {
-                item.Food = food;
-                return item;
-            },
             new { MealId = meal.Id },
             transaction: _unitOfWork.Transaction,
+            cancellationToken: cancellationToken);
+
+        var items = await _unitOfWork.Connection.QueryAsync<MealLogItemEntity, FoodEntity, MealLogItemEntity>(
+            command,
+            MapItemWithFood,
             splitOn: "Id");
 
         meal.Items = items.ToList();
+    }
+
+    private static MealLogItemEntity MapItemWithFood(MealLogItemEntity item, FoodEntity? food)
+    {
+        item.Food = food;
+        return item;
     }
 }

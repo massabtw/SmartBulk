@@ -1,5 +1,5 @@
 using FluentValidation;
-using SmartBulk.Application.Models;
+using SmartBulk.Domain.Http.Llm.Models;
 
 namespace SmartBulk.Application.Validations;
 
@@ -13,9 +13,15 @@ public class CafeteriaLlmExtractionModelValidator : AbstractValidator<CafeteriaL
 
         RuleForEach(x => x.Meals).ChildRules(meal =>
         {
-            meal.RuleFor(m => m.Date).NotEmpty().WithMessage("A data da refeição é obrigatória.");
-            meal.RuleFor(m => m.MealType).NotEmpty().WithMessage("O tipo da refeição é obrigatório.");
-            meal.RuleFor(m => m.Items).NotEmpty().WithMessage("A refeição deve conter componentes.");
+            meal.RuleFor(m => m.Date)
+                .NotEmpty().WithMessage("A data da refeição é obrigatória.")
+                .Must(d => DateOnly.TryParse(d, out _)).WithMessage("A data da refeição deve estar no formato YYYY-MM-DD.");
+
+            meal.RuleFor(m => m.MealType)
+                .NotEmpty().WithMessage("O tipo da refeição é obrigatório.");
+
+            meal.RuleFor(m => m.Items)
+                .NotEmpty().WithMessage("A refeição deve conter componentes.");
 
             meal.RuleForEach(m => m.Items).ChildRules(item =>
             {

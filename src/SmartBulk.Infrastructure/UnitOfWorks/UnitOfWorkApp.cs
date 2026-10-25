@@ -16,6 +16,9 @@ public class UnitOfWorkApp : UnitOfWork<SqlConnection>, IUnitOfWorkApp
     public ICafeteriaMenuRepository CafeteriaMenu => new CafeteriaMenuRepository(this);
     public ICafeteriaDayOverrideRepository CafeteriaDayOverride => new CafeteriaDayOverrideRepository(this);
     public IMealLogRepository MealLog => new MealLogRepository(this);
+    public IMealTemplateRepository MealTemplate => new MealTemplateRepository(this);
+    public IHomeMealPlanRepository HomeMealPlan => new HomeMealPlanRepository(this);
+    public IShoppingListRepository ShoppingList => new ShoppingListRepository(this);
 
     public UnitOfWorkApp(IConfiguration configuration)
     {

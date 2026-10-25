@@ -17,7 +17,7 @@ public class FoodRepository : IFoodRepository
     public async Task<FoodEntity?> GetByIdAsync(int id, CancellationToken cancellationToken = default)
     {
         const string sql = @"
-            SELECT Id, Uuid, Name, Calories, Protein, Carbohydrates, Fat, IsCustom, RawYieldFactor, CreatedAt, UpdatedAt, Deleted
+            SELECT Id, Uuid, Name, Calories, Protein, Carbohydrates, Fat, IsCustom, IsFavorite, RawYieldFactor, CreatedAt, UpdatedAt, Deleted
               FROM Food
              WHERE Id = @id
                AND Deleted = 0";
@@ -34,7 +34,7 @@ public class FoodRepository : IFoodRepository
     public async Task<FoodEntity?> GetByUuidAsync(Guid uuid, CancellationToken cancellationToken = default)
     {
         const string sql = @"
-            SELECT Id, Uuid, Name, Calories, Protein, Carbohydrates, Fat, IsCustom, RawYieldFactor, CreatedAt, UpdatedAt, Deleted
+            SELECT Id, Uuid, Name, Calories, Protein, Carbohydrates, Fat, IsCustom, IsFavorite, RawYieldFactor, CreatedAt, UpdatedAt, Deleted
               FROM Food
              WHERE Uuid = @uuid
                AND Deleted = 0";
@@ -55,7 +55,7 @@ public class FoodRepository : IFoodRepository
         var offset = (pageNumber - 1) * pageSize;
 
         const string sql = @"
-            SELECT Id, Uuid, Name, Calories, Protein, Carbohydrates, Fat, IsCustom, RawYieldFactor, CreatedAt, UpdatedAt, Deleted
+            SELECT Id, Uuid, Name, Calories, Protein, Carbohydrates, Fat, IsCustom, IsFavorite, RawYieldFactor, CreatedAt, UpdatedAt, Deleted
               FROM Food
              WHERE (@Name IS NULL OR @Name = '' OR Name LIKE '%' + @Name + '%')
                AND Deleted = 0
@@ -90,22 +90,29 @@ public class FoodRepository : IFoodRepository
 
     public async Task<int> CreateAsync(FoodEntity entity, CancellationToken cancellationToken = default)
     {
+        if (entity.Uuid == Guid.Empty)
+        {
+            entity.Uuid = Guid.NewGuid();
+        }
+
         const string sql = @"
             INSERT INTO Food 
-                (Name, Calories, Protein, Carbohydrates, Fat, IsCustom, RawYieldFactor, CreatedAt, UpdatedAt, Deleted)
+                (Uuid, Name, Calories, Protein, Carbohydrates, Fat, IsCustom, IsFavorite, RawYieldFactor, CreatedAt, UpdatedAt, Deleted)
             OUTPUT Inserted.Id
             VALUES 
-                (@Name, @Calories, @Protein, @Carbohydrates, @Fat, @IsCustom, @RawYieldFactor, @CreatedAt, @UpdatedAt, 0)";
+                (@Uuid, @Name, @Calories, @Protein, @Carbohydrates, @Fat, @IsCustom, @IsFavorite, @RawYieldFactor, @CreatedAt, @UpdatedAt, 0)";
 
         var now = DateTimeOffset.UtcNow;
         var parameters = new
         {
+            entity.Uuid,
             entity.Name,
             entity.Calories,
             entity.Protein,
             entity.Carbohydrates,
             entity.Fat,
             entity.IsCustom,
+            entity.IsFavorite,
             entity.RawYieldFactor,
             CreatedAt = now,
             UpdatedAt = now
@@ -129,6 +136,7 @@ public class FoodRepository : IFoodRepository
                    Protein        = @Protein,
                    Carbohydrates  = @Carbohydrates,
                    Fat            = @Fat,
+                   IsFavorite     = @IsFavorite,
                    RawYieldFactor = @RawYieldFactor,
                    UpdatedAt      = @UpdatedAt
              WHERE (Id = @Id OR Uuid = @Uuid)
@@ -143,6 +151,7 @@ public class FoodRepository : IFoodRepository
             entity.Protein,
             entity.Carbohydrates,
             entity.Fat,
+            entity.IsFavorite,
             entity.RawYieldFactor,
             UpdatedAt = DateTimeOffset.UtcNow
         };
@@ -174,5 +183,41 @@ public class FoodRepository : IFoodRepository
 
         var rows = await _unitOfWork.Connection.ExecuteAsync(command);
         return rows > 0;
+    }
+
+    public async Task<bool> SetFavoriteAsync(Guid uuid, bool isFavorite, CancellationToken cancellationToken = default)
+    {
+        const string sql = @"
+            UPDATE Food
+               SET IsFavorite = @isFavorite,
+                   UpdatedAt  = @UpdatedAt
+             WHERE Uuid = @uuid
+               AND Deleted = 0";
+
+        var command = new CommandDefinition(
+            sql,
+            new { uuid, isFavorite, UpdatedAt = DateTimeOffset.UtcNow },
+            transaction: _unitOfWork.Transaction,
+            cancellationToken: cancellationToken);
+
+        var rows = await _unitOfWork.Connection.ExecuteAsync(command);
+        return rows > 0;
+    }
+
+    public async Task<IEnumerable<FoodEntity>> GetFavoritesAsync(CancellationToken cancellationToken = default)
+    {
+        const string sql = @"
+            SELECT Id, Uuid, Name, Calories, Protein, Carbohydrates, Fat, IsCustom, IsFavorite, RawYieldFactor, CreatedAt, UpdatedAt, Deleted
+              FROM Food
+             WHERE IsFavorite = 1
+               AND Deleted = 0
+             ORDER BY Name ASC";
+
+        var command = new CommandDefinition(
+            sql,
+            transaction: _unitOfWork.Transaction,
+            cancellationToken: cancellationToken);
+
+        return await _unitOfWork.Connection.QueryAsync<FoodEntity>(command);
     }
 }

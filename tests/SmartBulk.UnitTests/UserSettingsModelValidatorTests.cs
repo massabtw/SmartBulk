@@ -77,6 +77,8 @@ public class UserSettingsModelValidatorTests
     [InlineData(null)]
     [InlineData("not-a-time")]
     [InlineData("25:00")]
+    [InlineData("5")]
+    [InlineData("-01:00")]
     public void Validate_WhenLunchReminderTimeIsInvalid_Fails(string? time)
     {
         var model = CreateValidModel();
@@ -94,6 +96,8 @@ public class UserSettingsModelValidatorTests
     [InlineData(null)]
     [InlineData("invalid")]
     [InlineData("12:65")]
+    [InlineData("3")]
+    [InlineData("-02:30")]
     public void Validate_WhenDinnerReminderTimeIsInvalid_Fails(string? time)
     {
         var model = CreateValidModel();
