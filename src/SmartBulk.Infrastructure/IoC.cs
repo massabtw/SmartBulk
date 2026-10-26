@@ -34,8 +34,11 @@ public static class IoC
     {
         services.ConfigureOptions<LlmConfigureOptions>();
         services.AddTransient<LlmAuthHandler>();
-        services.AddHttpClient<ILlmClient, LlmClient>()
-            .AddHttpMessageHandler<LlmAuthHandler>();
+        services.AddHttpClient<ILlmClient, LlmClient>(client =>
+        {
+            client.Timeout = TimeSpan.FromSeconds(60);
+        })
+        .AddHttpMessageHandler<LlmAuthHandler>();
     }
 
     private static void AddTelegram(this IServiceCollection services, IConfiguration configuration)

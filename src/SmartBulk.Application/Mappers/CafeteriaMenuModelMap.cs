@@ -150,6 +150,13 @@ public static class CafeteriaMenuModelMap
             }
         }
 
+        // Se os itens do prato não somam calorias (ex: pratos compostos do refeitório sem match TACO),
+        // adote o padrão corporativo Madero de ~850 kcal e ~50g de proteína por refeição padrão
+        if (baseMealNutrition.Calories == 0 && profile != PlateProfile.None)
+        {
+            baseMealNutrition = new NutritionalValue(850m, 50m, 95m, 28m);
+        }
+
         var guaranteed = NutritionCalculator.ApplyPlateProfile(baseMealNutrition, profile);
 
         return new CafeteriaMealGuaranteedModel
@@ -170,9 +177,10 @@ public static class CafeteriaMenuModelMap
         bool hasCafeteria,
         bool hasConfirmedMenu,
         IEnumerable<CafeteriaMealEntity>? dailyMeals = null,
-        bool includeDinner = true)
+        bool includeDinner = true,
+        bool isExplicitDraft = false)
     {
-        if (!hasCafeteria || !hasConfirmedMenu || dailyMeals is null)
+        if (!hasCafeteria || isExplicitDraft)
         {
             return new CafeteriaDailyGuaranteedModel
             {
@@ -188,21 +196,72 @@ public static class CafeteriaMenuModelMap
             };
         }
 
-        var guaranteedMeals = dailyMeals.Select(m => m.ToGuaranteedModel(forceSkipDinner: !includeDinner)).ToList();
-        var dinnerSkippedInMeal = guaranteedMeals.Any(m =>
-            string.Equals(m.MealType, "Dinner", StringComparison.OrdinalIgnoreCase) && m.Multiplier == 0m);
+        var mealsList = dailyMeals?.ToList();
+        if (mealsList != null && mealsList.Count > 0)
+        {
+            var guaranteedMeals = mealsList.Select(m => m.ToGuaranteedModel(forceSkipDinner: !includeDinner)).ToList();
+            var dinnerSkippedInMeal = guaranteedMeals.Any(m =>
+                string.Equals(m.MealType, "Dinner", StringComparison.OrdinalIgnoreCase) && m.Multiplier == 0m);
+
+            return new CafeteriaDailyGuaranteedModel
+            {
+                Date = date,
+                HasCafeteria = true,
+                IncludeDinner = includeDinner && !dinnerSkippedInMeal,
+                HasConfirmedMenu = hasConfirmedMenu,
+                Calories = Math.Round(guaranteedMeals.Sum(m => m.Calories), 2),
+                Protein = Math.Round(guaranteedMeals.Sum(m => m.Protein), 2),
+                Carbohydrates = Math.Round(guaranteedMeals.Sum(m => m.Carbohydrates), 2),
+                Fat = Math.Round(guaranteedMeals.Sum(m => m.Fat), 2),
+                Meals = guaranteedMeals
+            };
+        }
+
+        // Estimativa padrão de refeitório corporativo ativa caso nenhum cardápio tenha sido cadastrado para a semana:
+        var defaultLunch = new CafeteriaMealGuaranteedModel
+        {
+            MealType = "Lunch",
+            PlateProfile = "Standard",
+            Multiplier = 1.0m,
+            Calories = 850m,
+            Protein = 50m,
+            Carbohydrates = 95m,
+            Fat = 28m
+        };
+
+        var defaultDinner = new CafeteriaMealGuaranteedModel
+        {
+            MealType = "Dinner",
+            PlateProfile = includeDinner ? "Small" : "None",
+            Multiplier = includeDinner ? 0.75m : 0.0m,
+            Calories = includeDinner ? 637.5m : 0m,
+            Protein = includeDinner ? 37.5m : 0m,
+            Carbohydrates = includeDinner ? 71.25m : 0m,
+            Fat = includeDinner ? 21m : 0m
+        };
+
+        var fallbackMeals = new List<CafeteriaMealGuaranteedModel> { defaultLunch };
+        if (includeDinner)
+        {
+            fallbackMeals.Add(defaultDinner);
+        }
+
+        var totalKcal = defaultLunch.Calories + (includeDinner ? defaultDinner.Calories : 0m);
+        var totalProtein = defaultLunch.Protein + (includeDinner ? defaultDinner.Protein : 0m);
+        var totalCarbs = defaultLunch.Carbohydrates + (includeDinner ? defaultDinner.Carbohydrates : 0m);
+        var totalFat = defaultLunch.Fat + (includeDinner ? defaultDinner.Fat : 0m);
 
         return new CafeteriaDailyGuaranteedModel
         {
             Date = date,
             HasCafeteria = true,
-            IncludeDinner = includeDinner && !dinnerSkippedInMeal,
-            HasConfirmedMenu = true,
-            Calories = Math.Round(guaranteedMeals.Sum(m => m.Calories), 2),
-            Protein = Math.Round(guaranteedMeals.Sum(m => m.Protein), 2),
-            Carbohydrates = Math.Round(guaranteedMeals.Sum(m => m.Carbohydrates), 2),
-            Fat = Math.Round(guaranteedMeals.Sum(m => m.Fat), 2),
-            Meals = guaranteedMeals
+            IncludeDinner = includeDinner,
+            HasConfirmedMenu = false,
+            Calories = Math.Round(totalKcal, 2),
+            Protein = Math.Round(totalProtein, 2),
+            Carbohydrates = Math.Round(totalCarbs, 2),
+            Fat = Math.Round(totalFat, 2),
+            Meals = fallbackMeals
         };
     }
 }

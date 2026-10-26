@@ -95,7 +95,7 @@ public class CafeteriaMenuService : ICafeteriaMenuService
                 await _unitOfWork.CafeteriaMenu.DeleteMenuAsync(existingMenu.Uuid, cancellationToken);
             }
 
-            var menuEntity = weekStart.ToEntity("Draft");
+            var menuEntity = weekStart.ToEntity("Confirmed");
             var menuId = await _unitOfWork.CafeteriaMenu.CreateMenuAsync(menuEntity, cancellationToken);
             menuEntity.Id = menuId;
 
@@ -152,7 +152,41 @@ public class CafeteriaMenuService : ICafeteriaMenuService
                 foreach (var extractedItem in extractedMeal.Items)
                 {
                     var matchedFood = FindMatchingFood(extractedItem.Name, allFoods);
+                    if (matchedFood == null)
+                    {
+                        var estKcal = extractedItem.EstimatedKcalPer100g ?? 160m;
+                        var estProt = extractedItem.EstimatedProteinPer100g ?? 12m;
+                        var estCarb = extractedItem.EstimatedCarbsPer100g ?? 16m;
+                        var estFat = extractedItem.EstimatedFatPer100g ?? 6m;
+
+                        var customFood = new FoodEntity
+                        {
+                            Uuid = Guid.NewGuid(),
+                            Name = extractedItem.Name.Trim(),
+                            Calories = Math.Round(estKcal, 2),
+                            Protein = Math.Round(estProt, 2),
+                            Carbohydrates = Math.Round(estCarb, 2),
+                            Fat = Math.Round(estFat, 2),
+                            IsCustom = true,
+                            CreatedAt = DateTimeOffset.UtcNow,
+                            UpdatedAt = DateTimeOffset.UtcNow
+                        };
+
+                        try
+                        {
+                            var createdFoodId = await _unitOfWork.Food.CreateAsync(customFood, cancellationToken);
+                            customFood.Id = createdFoodId;
+                            allFoods.Add(customFood);
+                            matchedFood = customFood;
+                        }
+                        catch (Exception ex)
+                        {
+                            _logger.LogWarning(ex, "Could not auto-cache cafeteria food {Name}. Continuing in-memory.", extractedItem.Name);
+                        }
+                    }
+
                     var itemEntity = extractedItem.ToEntity(mealId, matchedFood);
+                    itemEntity.IsPending = false;
 
                     var itemId = await _unitOfWork.CafeteriaMenu.CreateMealItemAsync(itemEntity, cancellationToken);
                     itemEntity.Id = itemId;
@@ -604,15 +638,20 @@ public class CafeteriaMenuService : ICafeteriaMenuService
 
             var monday = GetWeekMonday(targetDate);
             var menu = await _unitOfWork.CafeteriaMenu.GetByWeekStartDateAsync(monday, cancellationToken);
-            var isConfirmed = menu != null && menu.Status.Equals("Confirmed", StringComparison.OrdinalIgnoreCase);
+            var isExplicitDraft = menu != null && menu.Status.Equals("Draft", StringComparison.OrdinalIgnoreCase);
 
-            if (menu == null || !isConfirmed)
+            if (isExplicitDraft)
             {
-                return targetDate.ToDailyGuaranteedModel(hasCafeteria: true, hasConfirmedMenu: false, includeDinner: includeDinner);
+                return targetDate.ToDailyGuaranteedModel(hasCafeteria: true, hasConfirmedMenu: false, dailyMeals: null, includeDinner: includeDinner, isExplicitDraft: true);
             }
 
-            var dailyMeals = menu.Meals.Where(m => m.Date == targetDate).ToList();
-            return targetDate.ToDailyGuaranteedModel(hasCafeteria: true, hasConfirmedMenu: true, dailyMeals, includeDinner: includeDinner);
+            var dailyMeals = menu?.Meals?.Where(m => m.Date == targetDate).ToList();
+            if (dailyMeals != null && dailyMeals.Count > 0)
+            {
+                return targetDate.ToDailyGuaranteedModel(hasCafeteria: true, hasConfirmedMenu: true, dailyMeals, includeDinner: includeDinner);
+            }
+
+            return targetDate.ToDailyGuaranteedModel(hasCafeteria: true, hasConfirmedMenu: false, dailyMeals: null, includeDinner: includeDinner);
         }
         catch (Exception ex)
         {
@@ -659,11 +698,11 @@ public class CafeteriaMenuService : ICafeteriaMenuService
         var thursday = weekStart.AddDays(3);
         var friday = weekStart.AddDays(4);
 
-        const string systemPrompt = @"Você é um especialista em nutrição esportiva.
-Sua tarefa é atuar EXCLUSIVAMENTE como um parser semântico do cardápio do refeitório corporativo para os 5 DIAS ÚTEIS da semana (Segunda a Sexta-feira).
+        const string systemPrompt = @"Você é um especialista em nutrição esportiva e cardápios corporativos.
+Sua tarefa é atuar como um parser semântico do cardápio do refeitório corporativo para os 5 DIAS ÚTEIS da semana (Segunda a Sexta-feira).
 A partir de uma única imagem ou texto contendo a semana inteira, você DEVE extrair todos os 5 dias úteis (Segunda a Sexta), identificando o Almoço (Lunch) e o Jantar (Dinner) de cada dia.
 Decomponha os pratos de cada refeição em componentes com o nome limpo do alimento e a porção estimada em gramas.
-NÃO calcule e NÃO invente calorias ou macronutrientes: todo o cálculo nutricional é delegado integralmente aos catálogos do sistema (base TACO e Open Food Facts).
+Para cada item de prato composto (ex: estrogonofe, frango assado, carne assada, etc.), forneça também uma estimativa de segurança de macronutrientes por 100g (""estimatedKcalPer100g"", ""estimatedProteinPer100g"", ""estimatedCarbsPer100g"", ""estimatedFatPer100g"").
 Responda EXCLUSIVAMENTE em JSON no seguinte formato:
 {
   ""meals"": [
@@ -671,17 +710,17 @@ Responda EXCLUSIVAMENTE em JSON no seguinte formato:
       ""date"": ""YYYY-MM-DD"",
       ""mealType"": ""Lunch"",
       ""items"": [
-        { ""name"": ""Arroz branco cozido"", ""grams"": 150 },
-        { ""name"": ""Feijão carioca cozido"", ""grams"": 100 },
-        { ""name"": ""Peito de frango grelhado"", ""grams"": 150 }
+        { ""name"": ""Arroz branco cozido"", ""grams"": 150, ""estimatedKcalPer100g"": 130, ""estimatedProteinPer100g"": 2.5, ""estimatedCarbsPer100g"": 28.0, ""estimatedFatPer100g"": 0.3 },
+        { ""name"": ""Feijão carioca cozido"", ""grams"": 100, ""estimatedKcalPer100g"": 76, ""estimatedProteinPer100g"": 4.8, ""estimatedCarbsPer100g"": 13.6, ""estimatedFatPer100g"": 0.5 },
+        { ""name"": ""Peito de frango grelhado"", ""grams"": 150, ""estimatedKcalPer100g"": 159, ""estimatedProteinPer100g"": 32.0, ""estimatedCarbsPer100g"": 0.0, ""estimatedFatPer100g"": 2.5 }
       ]
     },
     {
       ""date"": ""YYYY-MM-DD"",
       ""mealType"": ""Dinner"",
       ""items"": [
-        { ""name"": ""Arroz branco cozido"", ""grams"": 100 },
-        { ""name"": ""Carne moída refogada"", ""grams"": 120 }
+        { ""name"": ""Arroz branco cozido"", ""grams"": 100, ""estimatedKcalPer100g"": 130, ""estimatedProteinPer100g"": 2.5, ""estimatedCarbsPer100g"": 28.0, ""estimatedFatPer100g"": 0.3 },
+        { ""name"": ""Carne moída refogada"", ""grams"": 120, ""estimatedKcalPer100g"": 212, ""estimatedProteinPer100g"": 26.7, ""estimatedCarbsPer100g"": 0.0, ""estimatedFatPer100g"": 11.8 }
       ]
     }
   ]

@@ -17,7 +17,7 @@ public class LlmClientTests
     private readonly Mock<ILogger<LlmClient>> _loggerMock = new();
     private readonly IOptions<LlmOptions> _options = Options.Create(new LlmOptions
     {
-        BaseUrl = "https://models.inference.ai.azure.com",
+        BaseUrl = "https://models.github.ai/inference/",
         ApiKey = "test-fake-key",
         Model = "gpt-4o"
     });
@@ -210,5 +210,101 @@ public class LlmClientTests
         sentRequest!.Headers.Authorization.Should().NotBeNull();
         sentRequest.Headers.Authorization!.Scheme.Should().Be("Bearer");
         sentRequest.Headers.Authorization.Parameter.Should().Be("test-fake-key");
+    }
+
+    [Fact]
+    public async Task GenerateCompletionAsync_WithPrefixedBase64_DoesNotDuplicateDataUriPrefix()
+    {
+        HttpRequestMessage? capturedRequest = null;
+
+        var handlerMock = new Mock<HttpMessageHandler>();
+        handlerMock.Protected()
+            .Setup<Task<HttpResponseMessage>>(
+                "SendAsync",
+                ItExpr.IsAny<HttpRequestMessage>(),
+                ItExpr.IsAny<CancellationToken>())
+            .Callback<HttpRequestMessage, CancellationToken>((req, _) => capturedRequest = req)
+            .ReturnsAsync(new HttpResponseMessage
+            {
+                StatusCode = HttpStatusCode.OK,
+                Content = new StringContent(JsonSerializer.Serialize(new LlmChatCompletionResponseModel
+                {
+                    Choices = new List<LlmChatChoiceModel>
+                    {
+                        new() { Message = new LlmChatMessageResponseModel { Content = "OK" } }
+                    }
+                }))
+            });
+
+        var httpClient = new HttpClient(handlerMock.Object);
+        var client = new LlmClient(httpClient, _options, _loggerMock.Object);
+
+        const string alreadyPrefixed = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==";
+        var result = await client.GenerateCompletionAsync("Identifique o cardápio", imageBase64: alreadyPrefixed);
+
+        result.Success.Should().BeTrue();
+        capturedRequest.Should().NotBeNull();
+
+        var body = await capturedRequest!.Content!.ReadAsStringAsync();
+        using var doc = JsonDocument.Parse(body);
+        var urlValue = doc.RootElement
+            .GetProperty("messages")[0]
+            .GetProperty("content")[1]
+            .GetProperty("image_url")
+            .GetProperty("url")
+            .GetString();
+
+        urlValue.Should().Be("data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==");
+        body.Should().NotContain("data:image/jpeg;base64,data:image/png;base64,");
+    }
+
+    [Fact]
+    public async Task GenerateCompletionAsync_WhenHttp401_ReturnsDiagnosticWithStatusCode()
+    {
+        var handlerMock = new Mock<HttpMessageHandler>();
+        handlerMock.Protected()
+            .Setup<Task<HttpResponseMessage>>(
+                "SendAsync",
+                ItExpr.IsAny<HttpRequestMessage>(),
+                ItExpr.IsAny<CancellationToken>())
+            .ReturnsAsync(new HttpResponseMessage
+            {
+                StatusCode = HttpStatusCode.Unauthorized,
+                ReasonPhrase = "Unauthorized",
+                Content = new StringContent("Invalid API key provided")
+            });
+
+        var httpClient = new HttpClient(handlerMock.Object);
+        var client = new LlmClient(httpClient, _options, _loggerMock.Object);
+
+        var result = await client.GenerateCompletionAsync("Olá");
+
+        result.Success.Should().BeFalse();
+        result.Errors.Should().Contain(e => e.Contains("401") && e.Contains("Unauthorized"));
+    }
+
+    [Fact]
+    public async Task GenerateCompletionAsync_WhenHttp400_ReturnsDiagnosticWithStatusCodeAndMessage()
+    {
+        var handlerMock = new Mock<HttpMessageHandler>();
+        handlerMock.Protected()
+            .Setup<Task<HttpResponseMessage>>(
+                "SendAsync",
+                ItExpr.IsAny<HttpRequestMessage>(),
+                ItExpr.IsAny<CancellationToken>())
+            .ReturnsAsync(new HttpResponseMessage
+            {
+                StatusCode = HttpStatusCode.BadRequest,
+                ReasonPhrase = "Bad Request",
+                Content = new StringContent("{\"error\":{\"message\":\"Image decoding failed\"}}")
+            });
+
+        var httpClient = new HttpClient(handlerMock.Object);
+        var client = new LlmClient(httpClient, _options, _loggerMock.Object);
+
+        var result = await client.GenerateCompletionAsync("Olá");
+
+        result.Success.Should().BeFalse();
+        result.Errors.Should().Contain(e => e.Contains("400") && e.Contains("Image decoding failed"));
     }
 }

@@ -314,4 +314,71 @@ public class NaturalLanguageMealLogServiceTests
 
         _mealLogServiceMock.Verify(m => m.CreateMealLogAsync(It.Is<MealLogCreateModel>(c => c.Items.Count == 3), It.IsAny<CancellationToken>()), Times.Once);
     }
+
+    [Fact]
+    public async Task Process_WhenFoodNotFoundInTacoNorOpenFoodFacts_UsesLlmEstimatedMacrosAndAutoCachesAndLogsMeal()
+    {
+        const string snickersJson = @"{
+            ""mealName"": ""Lanche da Tarde"",
+            ""items"": [
+                {
+                    ""name"": ""Snickers"",
+                    ""grams"": 45,
+                    ""estimatedKcalPer100g"": 488,
+                    ""estimatedProteinPer100g"": 8.0,
+                    ""estimatedCarbsPer100g"": 60.0,
+                    ""estimatedFatPer100g"": 24.0
+                }
+            ]
+        }";
+
+        _llmClientMock.Setup(l => l.GenerateCompletionAsync(
+                It.IsAny<string>(),
+                It.IsAny<string>(),
+                true,
+                It.IsAny<string>(),
+                It.IsAny<string>(),
+                It.IsAny<CancellationToken>()))
+            .ReturnsAsync(Result<string>.Ok(snickersJson));
+
+        _foodRepoMock.Setup(f => f.SearchAsync(null, 1, 100, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new List<FoodEntity>());
+
+        _foodServiceMock.Setup(f => f.ResolveFoodByNameAsync("Snickers", It.IsAny<CancellationToken>()))
+            .ReturnsAsync(Result<FoodModel>.Fail("Não encontrado na busca externa"));
+
+        _foodRepoMock.Setup(f => f.CreateAsync(It.IsAny<FoodEntity>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(42);
+
+        var savedMealUuid = Guid.NewGuid();
+        _mealLogServiceMock.Setup(m => m.CreateMealLogAsync(It.IsAny<MealLogCreateModel>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new MealLogModel
+            {
+                Uuid = savedMealUuid,
+                Name = "Lanche da Tarde",
+                TotalCalories = 219.6m,
+                TotalProtein = 3.6m
+            });
+
+        _mealLogServiceMock.Setup(m => m.GetDailyGapOverviewAsync(It.IsAny<DateOnly?>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new DailyGapOverviewModel { CalorieGap = 900, ProteinGap = 40 });
+
+        var service = CreateService();
+        var result = await service.ProcessNaturalLanguageMealAsync(new NaturalLanguageMealLogRequestModel
+        {
+            Text = "comi um snickers"
+        });
+
+        result.Success.Should().BeTrue();
+        result.Data.Should().NotBeNull();
+        result.Data!.HasUnmatchedItems.Should().BeFalse();
+        result.Data.MealLogUuid.Should().Be(savedMealUuid);
+        result.Data.Summary.Should().Contain("Snickers (45g)");
+
+        _foodRepoMock.Verify(f => f.CreateAsync(
+            It.Is<FoodEntity>(e => e.Name == "Snickers" && e.Calories == 488 && e.Protein == 8.0m && e.IsCustom),
+            It.IsAny<CancellationToken>()), Times.Once);
+
+        _mealLogServiceMock.Verify(m => m.CreateMealLogAsync(It.IsAny<MealLogCreateModel>(), It.IsAny<CancellationToken>()), Times.Once);
+    }
 }

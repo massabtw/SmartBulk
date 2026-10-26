@@ -83,13 +83,44 @@ public class NaturalLanguageMealLogService : INaturalLanguageMealLogService
                     continue;
                 }
 
-                // Fallback: consulta Open Food Facts com auto-cache via FoodService
+                // Fallback 1: consulta Open Food Facts com auto-cache via FoodService
                 var resolveResult = await _foodService.ResolveFoodByNameAsync(item.Name, cancellationToken);
                 if (resolveResult.Success && resolveResult.Data != null)
                 {
                     var resolvedEntity = resolveResult.Data.ToEntity()!;
                     allFoods.Add(resolvedEntity);
                     matchedItems.Add((resolvedEntity, item.Grams, item.Name));
+                    continue;
+                }
+
+                // Fallback 2 (Regra de Ouro): Estimativa nutricional da LLM com Auto-Cache no SQL Server (IsCustom = true)
+                if (item.EstimatedKcalPer100g.HasValue && item.EstimatedKcalPer100g.Value > 0)
+                {
+                    var customFoodEntity = new FoodEntity
+                    {
+                        Uuid = Guid.NewGuid(),
+                        Name = item.Name.Trim(),
+                        Calories = Math.Round(item.EstimatedKcalPer100g.Value, 2),
+                        Protein = Math.Round(item.EstimatedProteinPer100g ?? 5.0m, 2),
+                        Carbohydrates = Math.Round(item.EstimatedCarbsPer100g ?? 40.0m, 2),
+                        Fat = Math.Round(item.EstimatedFatPer100g ?? 15.0m, 2),
+                        IsCustom = true,
+                        CreatedAt = DateTimeOffset.UtcNow,
+                        UpdatedAt = DateTimeOffset.UtcNow
+                    };
+
+                    try
+                    {
+                        var createdId = await _unitOfWork.Food.CreateAsync(customFoodEntity, cancellationToken);
+                        customFoodEntity.Id = createdId;
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogWarning(ex, "Could not auto-cache estimated food {Name} to database. Continuing in-memory.", item.Name);
+                    }
+
+                    allFoods.Add(customFoodEntity);
+                    matchedItems.Add((customFoodEntity, item.Grams, item.Name));
                 }
                 else
                 {
@@ -163,25 +194,25 @@ public class NaturalLanguageMealLogService : INaturalLanguageMealLogService
         CancellationToken cancellationToken)
     {
         const string systemPrompt = @"Você é um assistente especializado em nutrição esportiva e registro de dietas.
-Sua tarefa é atuar EXCLUSIVAMENTE como um parser semântico do relato (ou foto) da refeição: identifique o nome descritivo da refeição e extraia o nome limpo de cada alimento consumido com a respectiva estimativa em gramas.
-NÃO invente, estime ou calcule calorias, carboidratos, proteínas ou gorduras: todo o cálculo nutricional é delegado integralmente aos catálogos do sistema (base TACO e Open Food Facts).
-Convenções de porções comuns:
-- 1 ovo médio = 50g (3 ovos = 150g)
-- 1 pão francês = 50g (2 pães = 100g)
-- 1 colher de sopa de requeijão = 30g
-- 1 colher de sopa de pasta de amendoim = 15-20g
-- 1 fatia de queijo = 25-30g
-- 1 copo de leite = 200ml (200g)
-- 1 scoop de whey = 30g
-- 1 banana média = 100g
-- 1 maçã média = 130g
+Sua tarefa é atuar como um parser semântico do relato (ou foto) da refeição:
+1. Identifique o nome descritivo da refeição (ex: ""Café da manhã"", ""Almoço"", ""Lanche da tarde"", ""Jantar"", ""Ceia"").
+2. Para cada alimento consumido, extraia:
+   - ""name"": nome limpo e comum do alimento ou produto (ex: ""Ovo de galinha cozido"", ""Pão francês"", ""Snickers"", ""Pringles Original"").
+   - ""grams"": estimativa em gramas. Para itens com unidades ou pacotes, estime o peso típico (ex: 1 ovo médio = 50g; 1 pão francês = 50g; 1 barra de Snickers = 45g; 1 lata/pacote Pringles = 104g ou 40g; 1 scoop whey = 30g; 1 banana média = 100g; 1 fatia de queijo = 25-30g; 1 colher sopa requeijão = 30g).
+   - ""estimatedKcalPer100g"", ""estimatedProteinPer100g"", ""estimatedCarbsPer100g"", ""estimatedFatPer100g"": estimativa nutricional média de segurança por 100g do alimento ou produto industrializado, caso não conste nas tabelas locais (ex: Snickers: ~488 kcal, 8g prot, 60g carb, 24g gord; Pringles: ~520 kcal, 4g prot, 54g carb, 32g gord; Chocolate: ~535 kcal, 7g prot, 58g carb, 30g gord; Ovo: ~146 kcal, 13g prot, 1g carb, 10g gord).
+
 Responda EXCLUSIVAMENTE em JSON no formato:
 {
-  ""mealName"": ""Café da manhã"",
+  ""mealName"": ""Lanche da tarde"",
   ""items"": [
-    { ""name"": ""Ovo de galinha cozido"", ""grams"": 150 },
-    { ""name"": ""Pão francês"", ""grams"": 100 },
-    { ""name"": ""Requeijão cremoso"", ""grams"": 30 }
+    {
+      ""name"": ""Snickers"",
+      ""grams"": 45,
+      ""estimatedKcalPer100g"": 488,
+      ""estimatedProteinPer100g"": 8.0,
+      ""estimatedCarbsPer100g"": 60.0,
+      ""estimatedFatPer100g"": 24.0
+    }
   ]
 }";
 

@@ -92,14 +92,14 @@ public class CafeteriaMenuServiceTests
 
         result.Success.Should().BeTrue();
         result.Data.Should().NotBeNull();
-        result.Data!.Status.Should().Be("Draft");
+        result.Data!.Status.Should().Be("Confirmed");
 
-        _menuRepoMock.Verify(m => m.CreateMenuAsync(It.Is<CafeteriaMenuEntity>(e => e.Status == "Draft" && e.WeekStartDate == weekStart), It.IsAny<CancellationToken>()), Times.Once);
+        _menuRepoMock.Verify(m => m.CreateMenuAsync(It.Is<CafeteriaMenuEntity>(e => e.Status == "Confirmed" && e.WeekStartDate == weekStart), It.IsAny<CancellationToken>()), Times.Once);
 
         // Verify items were created with correct matching (including accent-insensitive match for Tilapia)
         _menuRepoMock.Verify(m => m.CreateMealItemAsync(It.Is<CafeteriaMealItemEntity>(i => i.RawName == "Arroz branco cozido" && i.FoodId == 1 && !i.IsPending), It.IsAny<CancellationToken>()), Times.Once);
         _menuRepoMock.Verify(m => m.CreateMealItemAsync(It.Is<CafeteriaMealItemEntity>(i => i.RawName == "Tilapia file grelhado" && i.FoodId == 3 && !i.IsPending), It.IsAny<CancellationToken>()), Times.Once);
-        _menuRepoMock.Verify(m => m.CreateMealItemAsync(It.Is<CafeteriaMealItemEntity>(i => i.RawName == "Sobremesa exótica desconhecida" && i.FoodId == null && i.IsPending), It.IsAny<CancellationToken>()), Times.Once);
+        _menuRepoMock.Verify(m => m.CreateMealItemAsync(It.Is<CafeteriaMealItemEntity>(i => i.RawName == "Sobremesa exótica desconhecida" && !i.IsPending), It.IsAny<CancellationToken>()), Times.Once);
     }
 
     [Fact]
@@ -835,5 +835,33 @@ public class CafeteriaMenuServiceTests
 
         result.Success.Should().BeTrue();
         _menuRepoMock.Verify(m => m.UpdateStatusAsync(42, "Confirmed", It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [Fact]
+    public async Task GetDailyGuaranteedAsync_WhenWeekdayWithoutUploadedMenu_AppliesActiveCorporateCafeteriaEstimate()
+    {
+        var tuesday = new DateOnly(2026, 10, 27);
+        _dayOverrideRepoMock.Setup(d => d.GetByDateAsync(tuesday, It.IsAny<CancellationToken>()))
+            .ReturnsAsync((CafeteriaDayOverrideEntity?)null);
+
+        _menuRepoMock.Setup(m => m.GetByWeekStartDateAsync(It.IsAny<DateOnly>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync((CafeteriaMenuEntity?)null);
+
+        var service = new CafeteriaMenuService(
+            _uowMock.Object,
+            _llmClientMock.Object,
+            _ingestValidator,
+            _extractionValidator,
+            _loggerMock.Object);
+
+        var result = await service.GetDailyGuaranteedAsync(tuesday);
+
+        result.Success.Should().BeTrue();
+        result.Data.Should().NotBeNull();
+        result.Data!.HasCafeteria.Should().BeTrue();
+        result.Data.HasConfirmedMenu.Should().BeFalse();
+        result.Data.Calories.Should().Be(1487.5m); // 850 (lunch 1.0x) + 637.5 (dinner 0.75x)
+        result.Data.Protein.Should().Be(87.5m);    // 50 (lunch 1.0x) + 37.5 (dinner 0.75x)
+        result.Data.Meals.Should().HaveCount(2);
     }
 }

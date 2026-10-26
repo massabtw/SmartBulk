@@ -103,7 +103,7 @@ public class CafeteriaMenuEndpointIntegrationTests : IClassFixture<WebApplicatio
         });
 
         model.Should().NotBeNull();
-        model!.Status.Should().Be("Draft");
+        model!.Status.Should().Be("Confirmed");
     }
 
     [Fact]

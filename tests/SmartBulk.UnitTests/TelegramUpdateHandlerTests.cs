@@ -18,6 +18,7 @@ public class TelegramUpdateHandlerTests
     private readonly Mock<INaturalLanguageMealLogService> _naturalLanguageServiceMock = new();
     private readonly Mock<IMealLogService> _mealLogServiceMock = new();
     private readonly Mock<ICafeteriaReminderService> _reminderServiceMock = new();
+    private readonly Mock<ICafeteriaMenuService> _cafeteriaMenuServiceMock = new();
     private readonly Mock<ILogger<TelegramUpdateHandler>> _loggerMock = new();
 
     private readonly TelegramOptions _options = new()
@@ -33,6 +34,7 @@ public class TelegramUpdateHandlerTests
             _naturalLanguageServiceMock.Object,
             _mealLogServiceMock.Object,
             _reminderServiceMock.Object,
+            _cafeteriaMenuServiceMock.Object,
             Options.Create(_options),
             _loggerMock.Object);
 
@@ -300,6 +302,102 @@ public class TelegramUpdateHandlerTests
         result.Success.Should().BeTrue();
         _telegramClientMock.Verify(t => t.AnswerCallbackQueryAsync("cb_456", "Processando...", It.IsAny<CancellationToken>()), Times.Once);
         _reminderServiceMock.Verify(r => r.ProcessPlateProfileCallbackAsync(999888777, $"plate:{mealUuid}:Generous", It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [Fact]
+    public async Task HandleUpdateAsync_WhenStatusCommand_SendsCurrentGap()
+    {
+        _mealLogServiceMock.Setup(m => m.GetDailyGapOverviewAsync(null, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new DailyGapOverviewModel
+            {
+                CalorieTarget = 2800,
+                ProteinTarget = 150,
+                CalorieGap = 650,
+                ProteinGap = 35
+            });
+
+        var handler = CreateHandler();
+
+        var update = new TelegramUpdateModel
+        {
+            UpdateId = 9,
+            Message = new TelegramMessageModel
+            {
+                MessageId = 16,
+                Chat = new TelegramChatModel { Id = 999888777 },
+                Text = "/status"
+            }
+        };
+
+        var result = await handler.HandleUpdateAsync(update);
+
+        result.Success.Should().BeTrue();
+        _telegramClientMock.Verify(t => t.SendMessageAsync(
+            999888777,
+            It.Is<string>(msg => msg.Contains("650 kcal") && msg.Contains("35 g")),
+            null,
+            null,
+            It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [Fact]
+    public async Task HandleUpdateAsync_WhenPhotoWithoutMealCaption_IngestsWeeklyCafeteriaMenu()
+    {
+        _telegramClientMock.Setup(t => t.GetFileAsync("photo_file_id_1", It.IsAny<CancellationToken>()))
+            .ReturnsAsync(Result<TelegramFileModel>.Ok(new TelegramFileModel { FilePath = "photos/file_1.jpg" }));
+
+        _telegramClientMock.Setup(t => t.DownloadFileAsBase64Async("photos/file_1.jpg", It.IsAny<CancellationToken>()))
+            .ReturnsAsync(Result<string>.Ok("dGVzdGZpbGVjb250ZW50"));
+
+        _cafeteriaMenuServiceMock.Setup(c => c.IngestMenuAsync(It.IsAny<CafeteriaMenuIngestModel>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(Result<CafeteriaMenuModel>.Ok(new CafeteriaMenuModel
+            {
+                WeekStartDate = new DateOnly(2026, 10, 26),
+                Meals = new List<CafeteriaMealModel>
+                {
+                    new() { Date = new DateOnly(2026, 10, 26), MealType = "Lunch" },
+                    new() { Date = new DateOnly(2026, 10, 26), MealType = "Dinner" },
+                    new() { Date = new DateOnly(2026, 10, 27), MealType = "Lunch" },
+                    new() { Date = new DateOnly(2026, 10, 27), MealType = "Dinner" },
+                    new() { Date = new DateOnly(2026, 10, 28), MealType = "Lunch" },
+                    new() { Date = new DateOnly(2026, 10, 28), MealType = "Dinner" },
+                    new() { Date = new DateOnly(2026, 10, 29), MealType = "Lunch" },
+                    new() { Date = new DateOnly(2026, 10, 29), MealType = "Dinner" },
+                    new() { Date = new DateOnly(2026, 10, 30), MealType = "Lunch" },
+                    new() { Date = new DateOnly(2026, 10, 30), MealType = "Dinner" }
+                }
+            }));
+
+        var handler = CreateHandler();
+
+        var update = new TelegramUpdateModel
+        {
+            UpdateId = 10,
+            Message = new TelegramMessageModel
+            {
+                MessageId = 17,
+                Chat = new TelegramChatModel { Id = 999888777 },
+                Photo = new List<TelegramPhotoSizeModel>
+                {
+                    new() { FileId = "thumb", FileSize = 100 },
+                    new() { FileId = "photo_file_id_1", FileSize = 5000 }
+                }
+            }
+        };
+
+        var result = await handler.HandleUpdateAsync(update);
+
+        result.Success.Should().BeTrue();
+        _cafeteriaMenuServiceMock.Verify(c => c.IngestMenuAsync(
+            It.Is<CafeteriaMenuIngestModel>(m => m.ImageBase64 == "dGVzdGZpbGVjb250ZW50"),
+            It.IsAny<CancellationToken>()), Times.Once);
+
+        _telegramClientMock.Verify(t => t.SendMessageAsync(
+            999888777,
+            It.Is<string>(msg => msg.Contains("Cardápio semanal extraído com sucesso") && msg.Contains("Total de refeições: 10")),
+            null,
+            "Markdown",
+            It.IsAny<CancellationToken>()), Times.Once);
     }
 }
 

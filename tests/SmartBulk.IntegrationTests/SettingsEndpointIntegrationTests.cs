@@ -90,6 +90,8 @@ public class SettingsEndpointIntegrationTests : IClassFixture<WebApplicationFact
                 });
 
                 uowMock.Setup(u => u.UserSettings).Returns(repoMock.Object);
+                var overrideRepoMock = new Mock<ICafeteriaDayOverrideRepository>();
+                uowMock.Setup(u => u.CafeteriaDayOverride).Returns(overrideRepoMock.Object);
                 services.AddTransient(_ => uowMock.Object);
             });
         }).CreateClient();
@@ -123,32 +125,39 @@ public class SettingsEndpointIntegrationTests : IClassFixture<WebApplicationFact
                 var uowMock = new Mock<IUnitOfWorkApp>();
                 var repoMock = new Mock<IUserSettingsRepository>();
 
-                repoMock.SetupSequence(r => r.GetAsync(It.IsAny<CancellationToken>()))
-                    .ReturnsAsync(new UserSettingsEntity
-                    {
-                        Id = 1,
-                        Uuid = existingUuid,
-                        CalorieTargetKcal = 3000,
-                        ProteinTargetGPerKg = 2.0m,
-                        TimeZoneId = "America/Sao_Paulo",
-                        LunchReminderTime = new TimeSpan(12, 30, 0),
-                        DinnerReminderTime = new TimeSpan(19, 30, 0)
-                    })
-                    .ReturnsAsync(new UserSettingsEntity
-                    {
-                        Id = 1,
-                        Uuid = existingUuid,
-                        CalorieTargetKcal = 3400,
-                        ProteinTargetGPerKg = 2.2m,
-                        TimeZoneId = "America/Sao_Paulo",
-                        LunchReminderTime = new TimeSpan(12, 0, 0),
-                        DinnerReminderTime = new TimeSpan(20, 0, 0)
-                    });
+                var currentEntity = new UserSettingsEntity
+                {
+                    Id = 1,
+                    Uuid = existingUuid,
+                    CalorieTargetKcal = 3000,
+                    ProteinTargetGPerKg = 2.0m,
+                    TimeZoneId = "America/Sao_Paulo",
+                    LunchReminderTime = new TimeSpan(12, 30, 0),
+                    DinnerReminderTime = new TimeSpan(19, 30, 0)
+                };
+
+                repoMock.Setup(r => r.GetAsync(It.IsAny<CancellationToken>()))
+                    .ReturnsAsync(() => currentEntity);
 
                 repoMock.Setup(r => r.UpdateAsync(It.IsAny<UserSettingsEntity>(), It.IsAny<CancellationToken>()))
+                    .Callback<UserSettingsEntity, CancellationToken>((entity, _) =>
+                    {
+                        currentEntity = new UserSettingsEntity
+                        {
+                            Id = entity.Id,
+                            Uuid = entity.Uuid,
+                            CalorieTargetKcal = entity.CalorieTargetKcal,
+                            ProteinTargetGPerKg = entity.ProteinTargetGPerKg,
+                            TimeZoneId = entity.TimeZoneId,
+                            LunchReminderTime = entity.LunchReminderTime,
+                            DinnerReminderTime = entity.DinnerReminderTime
+                        };
+                    })
                     .ReturnsAsync(true);
 
                 uowMock.Setup(u => u.UserSettings).Returns(repoMock.Object);
+                var overrideRepoMock = new Mock<ICafeteriaDayOverrideRepository>();
+                uowMock.Setup(u => u.CafeteriaDayOverride).Returns(overrideRepoMock.Object);
                 services.AddTransient(_ => uowMock.Object);
             });
         }).CreateClient();

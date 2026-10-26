@@ -27,7 +27,7 @@ public class LlmClientRoutingTests
         },
         VisionAndFallbackProvider = new LlmProviderOptions
         {
-            BaseUrl = "https://models.inference.ai.azure.com/",
+            BaseUrl = "https://models.github.ai/inference/",
             ApiKey = "ghp-github-token",
             Model = "gpt-4o",
             TimeoutSeconds = 10
@@ -97,12 +97,12 @@ public class LlmClientRoutingTests
         result.Data.Should().Be("Foto do cardápio identificada via GPT-4o");
 
         capturedRequest.Should().NotBeNull();
-        capturedRequest!.RequestUri!.AbsoluteUri.Should().Be("https://models.inference.ai.azure.com/chat/completions");
+        capturedRequest!.RequestUri!.AbsoluteUri.Should().Be("https://models.github.ai/inference/chat/completions");
         capturedRequest.Headers.Authorization.Should().NotBeNull();
         capturedRequest.Headers.Authorization!.Parameter.Should().Be("ghp-github-token");
 
         var body = await capturedRequest.Content!.ReadAsStringAsync();
-        body.Should().Contain("\"model\":\"gpt-4o\"");
+        body.Should().Contain("\"model\":\"openai/gpt-4o\"");
         body.Should().Contain("image_url");
     }
 
@@ -146,7 +146,7 @@ public class LlmClientRoutingTests
 
         sentRequests.Should().HaveCount(2);
         sentRequests[0].RequestUri!.AbsoluteUri.Should().Be("https://api.groq.com/openai/v1/chat/completions");
-        sentRequests[1].RequestUri!.AbsoluteUri.Should().Be("https://models.inference.ai.azure.com/chat/completions");
+        sentRequests[1].RequestUri!.AbsoluteUri.Should().Be("https://models.github.ai/inference/chat/completions");
         sentRequests[1].Headers.Authorization!.Parameter.Should().Be("ghp-github-token");
     }
 
@@ -206,7 +206,7 @@ public class LlmClientRoutingTests
             },
             VisionAndFallbackProvider = new LlmProviderOptions
             {
-                BaseUrl = "https://models.inference.ai.azure.com/",
+                BaseUrl = "https://models.github.ai/inference/",
                 ApiKey = "ghp-github",
                 Model = "gpt-4o",
                 TimeoutSeconds = 5
@@ -275,6 +275,289 @@ public class LlmClientRoutingTests
         result.Success.Should().BeFalse();
         result.Errors.Should().Contain(e => e.Contains("429"));
         callCount.Should().Be(2); // Exactly 1 for Groq + 1 for GitHub Models fallback, then stops
+    }
+
+    [Fact]
+    public async Task ImageCall_WhenVisionProviderFailsWithDnsOrNetworkError_FallsBackToGroqVisionAndSucceeds()
+    {
+        var chatRequests = new List<HttpRequestMessage>();
+
+        var handlerMock = new Mock<HttpMessageHandler>();
+        handlerMock.Protected()
+            .Setup<Task<HttpResponseMessage>>(
+                "SendAsync",
+                ItExpr.IsAny<HttpRequestMessage>(),
+                ItExpr.IsAny<CancellationToken>())
+            .Returns<HttpRequestMessage, CancellationToken>((req, _) =>
+            {
+                if (req.RequestUri!.AbsolutePath.EndsWith("/models"))
+                {
+                    var modelsPayload = new
+                    {
+                        data = new[]
+                        {
+                            new { id = "qwen/qwen3.8-27b", active = true, input_modalities = new[] { "text", "image" } }
+                        }
+                    };
+                    return Task.FromResult(new HttpResponseMessage
+                    {
+                        StatusCode = HttpStatusCode.OK,
+                        Content = new StringContent(JsonSerializer.Serialize(modelsPayload))
+                    });
+                }
+
+                chatRequests.Add(req);
+                if (req.RequestUri!.Host.Contains("github.ai"))
+                {
+                    throw new HttpRequestException("No such host is known (models.github.ai:443)");
+                }
+
+                return Task.FromResult(new HttpResponseMessage
+                {
+                    StatusCode = HttpStatusCode.OK,
+                    Content = new StringContent(JsonSerializer.Serialize(CreateSuccessResponse("Cardápio lido via Groq Vision")))
+                });
+            });
+
+        var httpClient = new HttpClient(handlerMock.Object);
+        var client = new LlmClient(httpClient, _multiProviderOptions, _loggerMock.Object);
+
+        const string fakeBase64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==";
+        var result = await client.GenerateCompletionAsync("Identifique o cardápio", imageBase64: fakeBase64, imageMimeType: "image/png");
+
+        result.Success.Should().BeTrue();
+        result.Data.Should().Be("Cardápio lido via Groq Vision");
+
+        chatRequests.Should().HaveCount(2);
+        chatRequests[0].RequestUri!.AbsoluteUri.Should().Be("https://models.github.ai/inference/chat/completions");
+        chatRequests[1].RequestUri!.AbsoluteUri.Should().Be("https://api.groq.com/openai/v1/chat/completions");
+        chatRequests[1].Headers.Authorization!.Parameter.Should().Be("gsk-groq-key");
+
+        var body = await chatRequests[1].Content!.ReadAsStringAsync();
+        body.Should().Contain("\"model\":\"qwen/qwen3.8-27b\"");
+        body.Should().Contain("image_url");
+    }
+
+    [Fact]
+    public async Task ImageCall_WhenVisionProviderReturns401_FallsBackToGroqVisionAndSucceeds()
+    {
+        var chatRequests = new List<HttpRequestMessage>();
+
+        var handlerMock = new Mock<HttpMessageHandler>();
+        handlerMock.Protected()
+            .Setup<Task<HttpResponseMessage>>(
+                "SendAsync",
+                ItExpr.IsAny<HttpRequestMessage>(),
+                ItExpr.IsAny<CancellationToken>())
+            .Returns<HttpRequestMessage, CancellationToken>((req, _) =>
+            {
+                if (req.RequestUri!.AbsolutePath.EndsWith("/models"))
+                {
+                    var modelsPayload = new
+                    {
+                        data = new[]
+                        {
+                            new { id = "qwen/qwen3.8-27b", active = true, input_modalities = new[] { "text", "image" } }
+                        }
+                    };
+                    return Task.FromResult(new HttpResponseMessage
+                    {
+                        StatusCode = HttpStatusCode.OK,
+                        Content = new StringContent(JsonSerializer.Serialize(modelsPayload))
+                    });
+                }
+
+                chatRequests.Add(req);
+                if (req.RequestUri!.Host.Contains("github.ai"))
+                {
+                    return Task.FromResult(new HttpResponseMessage
+                    {
+                        StatusCode = HttpStatusCode.Unauthorized,
+                        ReasonPhrase = "Unauthorized",
+                        Content = new StringContent("{\"error\":{\"message\":\"Invalid token for GitHub Models\"}}")
+                    });
+                }
+
+                return Task.FromResult(new HttpResponseMessage
+                {
+                    StatusCode = HttpStatusCode.OK,
+                    Content = new StringContent(JsonSerializer.Serialize(CreateSuccessResponse("Cardápio lido via Groq Vision após 401")))
+                });
+            });
+
+        var httpClient = new HttpClient(handlerMock.Object);
+        var client = new LlmClient(httpClient, _multiProviderOptions, _loggerMock.Object);
+
+        const string fakeBase64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==";
+        var result = await client.GenerateCompletionAsync("Identifique o cardápio", imageBase64: fakeBase64, imageMimeType: "image/png");
+
+        result.Success.Should().BeTrue();
+        result.Data.Should().Be("Cardápio lido via Groq Vision após 401");
+
+        chatRequests.Should().HaveCount(2);
+        chatRequests[1].RequestUri!.AbsoluteUri.Should().Be("https://api.groq.com/openai/v1/chat/completions");
+        chatRequests[1].Headers.Authorization!.Parameter.Should().Be("gsk-groq-key");
+
+        var body = await chatRequests[1].Content!.ReadAsStringAsync();
+        body.Should().Contain("\"model\":\"qwen/qwen3.8-27b\"");
+    }
+
+    [Fact]
+    public async Task ImageCall_WhenVisionProviderReturns500_FallsBackToGroqVisionAndSucceeds()
+    {
+        var chatRequests = new List<HttpRequestMessage>();
+
+        var handlerMock = new Mock<HttpMessageHandler>();
+        handlerMock.Protected()
+            .Setup<Task<HttpResponseMessage>>(
+                "SendAsync",
+                ItExpr.IsAny<HttpRequestMessage>(),
+                ItExpr.IsAny<CancellationToken>())
+            .Returns<HttpRequestMessage, CancellationToken>((req, _) =>
+            {
+                if (req.RequestUri!.AbsolutePath.EndsWith("/models"))
+                {
+                    var modelsPayload = new
+                    {
+                        data = new[]
+                        {
+                            new { id = "qwen/qwen3.8-27b", active = true, input_modalities = new[] { "text", "image" } }
+                        }
+                    };
+                    return Task.FromResult(new HttpResponseMessage
+                    {
+                        StatusCode = HttpStatusCode.OK,
+                        Content = new StringContent(JsonSerializer.Serialize(modelsPayload))
+                    });
+                }
+
+                chatRequests.Add(req);
+                if (req.RequestUri!.Host.Contains("github.ai"))
+                {
+                    return Task.FromResult(new HttpResponseMessage
+                    {
+                        StatusCode = HttpStatusCode.InternalServerError,
+                        Content = new StringContent("Internal Server Error")
+                    });
+                }
+
+                return Task.FromResult(new HttpResponseMessage
+                {
+                    StatusCode = HttpStatusCode.OK,
+                    Content = new StringContent(JsonSerializer.Serialize(CreateSuccessResponse("Cardápio lido via Groq Vision após 500")))
+                });
+            });
+
+        var httpClient = new HttpClient(handlerMock.Object);
+        var client = new LlmClient(httpClient, _multiProviderOptions, _loggerMock.Object);
+
+        const string fakeBase64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==";
+        var result = await client.GenerateCompletionAsync("Identifique o cardápio", imageBase64: fakeBase64, imageMimeType: "image/png");
+
+        result.Success.Should().BeTrue();
+        result.Data.Should().Be("Cardápio lido via Groq Vision após 500");
+        chatRequests.Should().HaveCount(2);
+    }
+
+    [Fact]
+    public async Task ImageCall_WhenBothVisionAndGroqVisionFail_StopsWithoutInfiniteLoop()
+    {
+        var chatRequests = new List<HttpRequestMessage>();
+
+        var handlerMock = new Mock<HttpMessageHandler>();
+        handlerMock.Protected()
+            .Setup<Task<HttpResponseMessage>>(
+                "SendAsync",
+                ItExpr.IsAny<HttpRequestMessage>(),
+                ItExpr.IsAny<CancellationToken>())
+            .Returns<HttpRequestMessage, CancellationToken>((req, _) =>
+            {
+                if (req.RequestUri!.AbsolutePath.EndsWith("/models"))
+                {
+                    return Task.FromResult(new HttpResponseMessage
+                    {
+                        StatusCode = HttpStatusCode.OK,
+                        Content = new StringContent("{\"data\":[{\"id\":\"qwen/qwen3.8-27b\",\"active\":true,\"input_modalities\":[\"image\"]}]}")
+                    });
+                }
+
+                chatRequests.Add(req);
+                return Task.FromResult(new HttpResponseMessage
+                {
+                    StatusCode = HttpStatusCode.BadRequest,
+                    ReasonPhrase = "Bad Request",
+                    Content = new StringContent("{\"error\":{\"message\":\"Image decoding failed\"}}")
+                });
+            });
+
+        var httpClient = new HttpClient(handlerMock.Object);
+        var client = new LlmClient(httpClient, _multiProviderOptions, _loggerMock.Object);
+
+        const string fakeBase64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==";
+        var result = await client.GenerateCompletionAsync("Identifique o cardápio", imageBase64: fakeBase64, imageMimeType: "image/png");
+
+        result.Success.Should().BeFalse();
+        chatRequests.Should().HaveCount(2); // Exactly 1 for GitHub Models + 1 for Groq Vision fallback, then stops
+    }
+
+    [Fact]
+    public async Task ImageCall_DiscoversDynamicVisionModelFromGroqApi()
+    {
+        var chatRequests = new List<HttpRequestMessage>();
+
+        var handlerMock = new Mock<HttpMessageHandler>();
+        handlerMock.Protected()
+            .Setup<Task<HttpResponseMessage>>(
+                "SendAsync",
+                ItExpr.IsAny<HttpRequestMessage>(),
+                ItExpr.IsAny<CancellationToken>())
+            .Returns<HttpRequestMessage, CancellationToken>((req, _) =>
+            {
+                if (req.RequestUri!.AbsolutePath.EndsWith("/models"))
+                {
+                    var modelsPayload = new
+                    {
+                        data = new[]
+                        {
+                            new { id = "llama-3.2-11b-vision-preview", active = true, input_modalities = new[] { "text", "image" } },
+                            new { id = "llama-3.3-70b-versatile", active = true, input_modalities = new[] { "text" } }
+                        }
+                    };
+                    return Task.FromResult(new HttpResponseMessage
+                    {
+                        StatusCode = HttpStatusCode.OK,
+                        Content = new StringContent(JsonSerializer.Serialize(modelsPayload))
+                    });
+                }
+
+                chatRequests.Add(req);
+                if (req.RequestUri!.Host.Contains("github.ai"))
+                {
+                    return Task.FromResult(new HttpResponseMessage
+                    {
+                        StatusCode = HttpStatusCode.Unauthorized,
+                        ReasonPhrase = "Unauthorized",
+                        Content = new StringContent("Invalid token")
+                    });
+                }
+
+                return Task.FromResult(new HttpResponseMessage
+                {
+                    StatusCode = HttpStatusCode.OK,
+                    Content = new StringContent(JsonSerializer.Serialize(CreateSuccessResponse("Lido com sucesso")))
+                });
+            });
+
+        var httpClient = new HttpClient(handlerMock.Object);
+        var client = new LlmClient(httpClient, _multiProviderOptions, _loggerMock.Object);
+
+        const string fakeBase64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==";
+        var result = await client.GenerateCompletionAsync("Identifique o cardápio", imageBase64: fakeBase64, imageMimeType: "image/png");
+
+        result.Success.Should().BeTrue();
+        chatRequests[1].RequestUri!.AbsoluteUri.Should().Be("https://api.groq.com/openai/v1/chat/completions");
+        var body = await chatRequests[1].Content!.ReadAsStringAsync();
+        body.Should().Contain("image_url");
     }
 
     private static LlmChatCompletionResponseModel CreateSuccessResponse(string content)

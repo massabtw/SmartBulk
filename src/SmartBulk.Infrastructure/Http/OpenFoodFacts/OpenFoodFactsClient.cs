@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using SmartBulk.Domain.Http.OpenFoodFacts;
@@ -15,7 +16,8 @@ public class OpenFoodFactsClient : IFoodExternalProvider
 
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
-        PropertyNameCaseInsensitive = true
+        PropertyNameCaseInsensitive = true,
+        NumberHandling = JsonNumberHandling.AllowReadingFromString
     };
 
     public OpenFoodFactsClient(
@@ -40,7 +42,7 @@ public class OpenFoodFactsClient : IFoodExternalProvider
         try
         {
             var baseUrl = string.IsNullOrWhiteSpace(_options.BaseUrl)
-                ? "https://br.openfoodfacts.org"
+                ? "https://world.openfoodfacts.org"
                 : _options.BaseUrl.TrimEnd('/');
 
             var url = $"{baseUrl}/cgi/search.pl?search_terms={Uri.EscapeDataString(query.Trim())}&search_simple=1&action=process&json=1&page_size=5&fields=product_name,brands,nutriments";
@@ -54,7 +56,7 @@ public class OpenFoodFactsClient : IFoodExternalProvider
             request.Headers.Accept.Clear();
             request.Headers.Accept.Add(new System.Net.Http.Headers.MediaTypeWithQualityHeaderValue("application/json"));
 
-            var timeoutSeconds = _options.TimeoutSeconds > 0 ? _options.TimeoutSeconds : 5;
+            var timeoutSeconds = _options.TimeoutSeconds > 0 ? _options.TimeoutSeconds : 4;
             using var timeoutCts = new CancellationTokenSource(TimeSpan.FromSeconds(timeoutSeconds));
             using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, timeoutCts.Token);
 

@@ -14,6 +14,7 @@ public class TelegramUpdateHandler : ITelegramUpdateHandler
     private readonly INaturalLanguageMealLogService _naturalLanguageService;
     private readonly IMealLogService _mealLogService;
     private readonly ICafeteriaReminderService _reminderService;
+    private readonly ICafeteriaMenuService _cafeteriaService;
     private readonly TelegramOptions _options;
     private readonly ILogger<TelegramUpdateHandler> _logger;
 
@@ -22,6 +23,7 @@ public class TelegramUpdateHandler : ITelegramUpdateHandler
         INaturalLanguageMealLogService naturalLanguageService,
         IMealLogService mealLogService,
         ICafeteriaReminderService reminderService,
+        ICafeteriaMenuService cafeteriaService,
         IOptions<TelegramOptions> options,
         ILogger<TelegramUpdateHandler> logger)
     {
@@ -29,6 +31,7 @@ public class TelegramUpdateHandler : ITelegramUpdateHandler
         _naturalLanguageService = naturalLanguageService;
         _mealLogService = mealLogService;
         _reminderService = reminderService;
+        _cafeteriaService = cafeteriaService;
         _options = options.Value;
         _logger = logger;
     }
@@ -120,17 +123,18 @@ public class TelegramUpdateHandler : ITelegramUpdateHandler
         if (text.Equals("/start", StringComparison.OrdinalIgnoreCase))
         {
             var welcomeText = "👋 Olá! Eu sou o SmartBulk Bot.\n\n" +
-                              "Envie o que você comeu (por exemplo: '3 ovos mexidos e 2 pães com requeijão') ou envie a foto de um prato para registrar sua refeição.\n\n" +
+                              "Envie o que você comeu (por exemplo: 'comi 3 ovos mexidos e 100g de aveia') para registrar sua refeição, ou envie o print/foto do cardápio do refeitório para extrair a semana inteira!\n\n" +
                               "Comandos úteis:\n" +
-                              "• /gap - Ver o Gap nutricional restante de hoje\n" +
+                              "• /status ou /gap - Ver o Gap nutricional restante de hoje\n" +
                               "• /desfazer - Desfazer a última refeição registrada";
 
             await _telegramClient.SendMessageAsync(chatId, welcomeText, cancellationToken: cancellationToken);
             return Result.Ok();
         }
 
-        // Command: /gap
-        if (text.Equals("/gap", StringComparison.OrdinalIgnoreCase))
+        // Command: /gap or /status
+        if (text.Equals("/gap", StringComparison.OrdinalIgnoreCase) ||
+            text.Equals("/status", StringComparison.OrdinalIgnoreCase))
         {
             var gapResult = await _mealLogService.GetDailyGapOverviewAsync(null, cancellationToken);
             if (!gapResult.Success || gapResult.Data is null)
@@ -141,10 +145,10 @@ public class TelegramUpdateHandler : ITelegramUpdateHandler
 
             var currentGap = gapResult.Data;
             var gapMessage = $"🎯 Status Nutricional de Hoje:\n\n" +
-                             $"• Meta: {currentGap.CalorieTarget} kcal | {currentGap.ProteinTarget:0.#} g proteína\n" +
-                             $"• Consumido: {currentGap.ConsumedCalories:0.#} kcal | {currentGap.ConsumedProtein:0.#} g proteína\n" +
-                             $"• Refeitório garantido: {currentGap.CafeteriaCalories:0.#} kcal | {currentGap.CafeteriaProtein:0.#} g proteína\n\n" +
-                             $"🔥 Gap a fechar em casa:\n" +
+                             $"• Meta do dia: {currentGap.CalorieTarget} kcal | {currentGap.ProteinTarget:0.#} g proteína\n" +
+                             $"• Refeitório (Almoço + Janta): {currentGap.CafeteriaCalories:0.#} kcal | {currentGap.CafeteriaProtein:0.#} g proteína\n" +
+                             $"• Consumido fora/em casa: {currentGap.ConsumedCalories:0.#} kcal | {currentGap.ConsumedProtein:0.#} g proteína\n\n" +
+                             $"🔥 Gap Restante para fechar o dia:\n" +
                              $"• Calorias: {currentGap.CalorieGap:0.#} kcal\n" +
                              $"• Proteína: {currentGap.ProteinGap:0.#} g";
 
@@ -166,7 +170,11 @@ public class TelegramUpdateHandler : ITelegramUpdateHandler
             var gapResult = await _mealLogService.GetDailyGapOverviewAsync(null, cancellationToken);
             var newGap = gapResult.Data;
             var undoText = $"🗑️ Última refeição desfeita!\n\n" +
-                           $"🎯 Gap atualizado de hoje:\n" +
+                           $"🎯 Status de Hoje:\n" +
+                           $"• Meta do dia: {newGap?.CalorieTarget ?? 0:0.#} kcal | {newGap?.ProteinTarget ?? 0:0.#} g proteína\n" +
+                           $"• Refeitório (Almoço + Janta): {newGap?.CafeteriaCalories ?? 0:0.#} kcal | {newGap?.CafeteriaProtein ?? 0:0.#} g proteína\n" +
+                           $"• Consumido fora/em casa: {newGap?.ConsumedCalories ?? 0:0.#} kcal | {newGap?.ConsumedProtein ?? 0:0.#} g proteína\n\n" +
+                           $"🔥 Gap Restante:\n" +
                            $"• Calorias: {newGap?.CalorieGap ?? 0:0.#} kcal\n" +
                            $"• Proteína: {newGap?.ProteinGap ?? 0:0.#} g";
 
@@ -174,7 +182,7 @@ public class TelegramUpdateHandler : ITelegramUpdateHandler
             return Result.Ok();
         }
 
-        // Natural language meal logging (text and/or photo)
+        // Photo or natural language meal logging
         string? imageBase64 = null;
         string? imageMimeType = null;
 
@@ -190,6 +198,46 @@ public class TelegramUpdateHandler : ITelegramUpdateHandler
                     imageBase64 = downloadResult.Data;
                     imageMimeType = "image/jpeg";
                 }
+            }
+
+            var isExplicitMealLog = text.StartsWith("comi", StringComparison.OrdinalIgnoreCase) ||
+                                    text.StartsWith("almocei", StringComparison.OrdinalIgnoreCase) ||
+                                    text.StartsWith("jantei", StringComparison.OrdinalIgnoreCase) ||
+                                    text.StartsWith("meu almoço", StringComparison.OrdinalIgnoreCase) ||
+                                    text.StartsWith("meu jantar", StringComparison.OrdinalIgnoreCase) ||
+                                    text.StartsWith("prato:", StringComparison.OrdinalIgnoreCase);
+
+            if (!isExplicitMealLog && !string.IsNullOrWhiteSpace(imageBase64))
+            {
+                await _telegramClient.SendMessageAsync(chatId, "⏳ Foto recebida! Processando cardápio semanal do refeitório (5 dias úteis)...", cancellationToken: cancellationToken);
+
+                var ingestModel = new CafeteriaMenuIngestModel
+                {
+                    ImageBase64 = imageBase64,
+                    ImageMimeType = imageMimeType,
+                    Text = text
+                };
+
+                var ingestResult = await _cafeteriaService.IngestMenuAsync(ingestModel, cancellationToken);
+                if (!ingestResult.Success || ingestResult.Data is null)
+                {
+                    var err = ingestResult.Errors.FirstOrDefault() ?? "Não foi possível extrair o cardápio da foto.";
+                    await _telegramClient.SendMessageAsync(chatId, $"⚠️ Falha na ingestão do cardápio: {err}", cancellationToken: cancellationToken);
+                    return Result.Ok();
+                }
+
+                var menu = ingestResult.Data;
+                var distinctDates = menu.Meals.Select(m => m.Date).Distinct().OrderBy(d => d).ToList();
+                var daysText = string.Join(", ", distinctDates.Select(d => d.ToString("dd/MM (ddd)")));
+
+                var cafeteriaConfirmation = $"📋 *Cardápio semanal extraído com sucesso!*\n\n" +
+                                            $"🗓️ *Semana de {menu.WeekStartDate:dd/MM/yyyy}*\n" +
+                                            $"• Dias identificados ({distinctDates.Count}): {daysText}\n" +
+                                            $"• Total de refeições: {menu.Meals.Count} (Almoço 1.0x / Jantar padrão 0.75x)\n\n" +
+                                            $"💡 _Acesse a tela Cardápio no app para revisar ou confirmar a semana inteira!_";
+
+                await _telegramClient.SendMessageAsync(chatId, cafeteriaConfirmation, parseMode: "Markdown", cancellationToken: cancellationToken);
+                return Result.Ok();
             }
         }
 
@@ -222,13 +270,18 @@ public class TelegramUpdateHandler : ITelegramUpdateHandler
         var updatedGap = responseData.NewDailyGap;
         var successMessage = $"✅ Refeição registrada: *{responseData.MealName}*\n" +
                              $"{responseData.Summary}\n\n" +
-                             $"📊 Nutrientes:\n" +
+                             $"📊 Nutrientes desta refeição:\n" +
                              $"• Calorias: {responseData.TotalCalories:0.#} kcal\n" +
                              $"• Proteína: {responseData.TotalProtein:0.#} g\n" +
                              $"• Carboidratos: {responseData.TotalCarbohydrates:0.#} g\n" +
                              $"• Gordura: {responseData.TotalFat:0.#} g\n\n" +
-                             $"🎯 Novo Gap de Hoje:\n" +
-                             $"• Faltam: {updatedGap?.CalorieGap ?? 0:0.#} kcal | {updatedGap?.ProteinGap ?? 0:0.#} g proteína";
+                             $"🎯 Status de Hoje:\n" +
+                             $"• Meta do dia: {updatedGap?.CalorieTarget ?? 0:0.#} kcal | {updatedGap?.ProteinTarget ?? 0:0.#} g proteína\n" +
+                             $"• Refeitório (Almoço + Janta): {updatedGap?.CafeteriaCalories ?? 0:0.#} kcal | {updatedGap?.CafeteriaProtein ?? 0:0.#} g proteína\n" +
+                             $"• Consumido fora/em casa: {updatedGap?.ConsumedCalories ?? 0:0.#} kcal | {updatedGap?.ConsumedProtein ?? 0:0.#} g proteína\n\n" +
+                             $"🔥 Gap Restante:\n" +
+                             $"• Calorias: {updatedGap?.CalorieGap ?? 0:0.#} kcal\n" +
+                             $"• Proteína: {updatedGap?.ProteinGap ?? 0:0.#} g";
 
         TelegramInlineKeyboardMarkupModel? replyMarkup = null;
         if (responseData.MealLogUuid.HasValue)
