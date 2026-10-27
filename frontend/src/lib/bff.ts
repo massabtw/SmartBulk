@@ -41,6 +41,9 @@ export async function bff<T>(path: string, init: RequestInit = {}): Promise<BffR
 
     return { data: (json as T) ?? null, error: null, status: res.status };
   } catch (err: unknown) {
+    if (err instanceof DOMException && err.name === "AbortError") {
+      return { data: null, error: null, status: 0 };
+    }
     const message = err instanceof Error ? err.message : "Falha de conexão com o servidor.";
     return { data: null, error: message, status: 0 };
   }
@@ -53,4 +56,3 @@ export const bffSend = <T,>(method: "POST" | "PUT" | "DELETE", path: string, bod
     method,
     body: body === undefined ? undefined : JSON.stringify(body),
   });
-

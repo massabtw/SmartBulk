@@ -1,3 +1,4 @@
+using SmartBulk.Application.Helpers;
 using SmartBulk.Application.Models;
 using SmartBulk.Domain.Entities;
 using SmartBulk.Domain.Http.Llm.Models;
@@ -70,6 +71,17 @@ public static class CafeteriaMenuModelMap
             model.Carbohydrates = portion.Carbohydrates;
             model.Fat = portion.Fat;
         }
+
+        var unitInfo = CafeteriaUnitHelper.GetUnitInfo(entity.RawName, entity.Food?.Name);
+        model.ServingUnitType = unitInfo.UnitType;
+        model.ServingUnitStepGrams = unitInfo.StepGrams;
+
+        if (unitInfo.UnitType == CafeteriaUnitHelper.UnitBurger)
+        {
+            model.BurgerSize = CafeteriaUnitHelper.GetBurgerSize(entity.ServingGrams);
+        }
+
+        model.ServingUnitText = CafeteriaUnitHelper.FormatServingText(entity.ServingGrams, entity.RawName, entity.Food?.Name, model.BurgerSize);
 
         return model;
     }

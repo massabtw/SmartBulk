@@ -22,7 +22,8 @@ async function forward(req: NextRequest, { params }: { params: { path: string[] 
 
   try {
     const subPath = params.path ? params.path.join("/") : "";
-    const targetUrl = `${baseUrl.replace(/\/+$/, "")}/api/${subPath}${req.nextUrl.search}`;
+    const cleanBase = baseUrl.replace(/\/+$/, "");
+    const targetUrl = `${cleanBase}/api/${subPath}${req.nextUrl.search}`;
 
     const headers = new Headers();
     headers.set("X-Api-Key", apiKey);

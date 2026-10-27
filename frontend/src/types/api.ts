@@ -124,6 +124,10 @@ export interface CafeteriaMealItemModel {
   protein: number;
   carbohydrates: number;
   fat: number;
+  servingUnitText?: string;
+  servingUnitType?: string;
+  servingUnitStepGrams?: number;
+  burgerSize?: string;
 }
 
 export interface CafeteriaMealModel {
@@ -207,6 +211,16 @@ export interface ShakeAdjustmentModel {
   resultingProteinGap: number;
 }
 
+export interface HomeMealPlanItemIngredientModel {
+  foodName: string;
+  servingGrams: number;
+  servingUnitText: string;
+  calories: number;
+  protein: number;
+  carbohydrates: number;
+  fat: number;
+}
+
 export interface HomeMealPlanItemModel {
   uuid: string;
   date: string;
@@ -218,6 +232,7 @@ export interface HomeMealPlanItemModel {
   protein: number;
   carbohydrates: number;
   fat: number;
+  ingredients?: HomeMealPlanItemIngredientModel[];
 }
 
 export interface HomeMealPlanDayModel {

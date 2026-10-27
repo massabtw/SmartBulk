@@ -24,6 +24,30 @@ function multiplierFor(profile?: string, mealType?: string) {
   return mealType?.toLowerCase() === "dinner" ? 0.75 : 1.0;
 }
 
+function isBurgerItem(item: CafeteriaMealItemModel): boolean {
+  if (item.servingUnitType === "burger") return true;
+  const name = (item.rawName || "").toLowerCase();
+  return (
+    name.includes("jeronimo") ||
+    name.includes("hamburg") ||
+    name.includes("burger") ||
+    name.includes("smash") ||
+    name.includes("cheeseburger")
+  );
+}
+
+function resolveBurgerSize(item: CafeteriaMealItemModel): "P" | "M" | "G" | "GG" {
+  if (item.burgerSize) {
+    const s = item.burgerSize.toUpperCase();
+    if (s === "P" || s === "M" || s === "G" || s === "GG") return s;
+  }
+  const grams = item.servingGrams || 195;
+  if (grams <= 165) return "P";
+  if (grams <= 225) return "M";
+  if (grams <= 285) return "G";
+  return "GG";
+}
+
 export function MealReviewCard({ meal, readOnly = false, onItemUpdated }: MealReviewCardProps) {
   const isDinner = meal.mealType?.toLowerCase() === "dinner";
   const [editingItemUuid, setEditingItemUuid] = useState<string | null>(null);
@@ -95,8 +119,32 @@ export function MealReviewCard({ meal, readOnly = false, onItemUpdated }: MealRe
     const ok = await updateItem(item, {
       servingGrams: parsed,
       foodUuid: item.foodUuid ?? undefined,
+      burgerSize: item.burgerSize,
     });
     if (ok) setEditingItemUuid(null);
+  };
+
+  const handleStepQuantity = async (item: CafeteriaMealItemModel, direction: number) => {
+    if (readOnly) return;
+    const step = item.servingUnitStepGrams && item.servingUnitStepGrams > 0 ? item.servingUnitStepGrams : 50;
+    const current = item.servingGrams;
+    let next = current + direction * step;
+    if (next < step) next = step;
+    await updateItem(item, {
+      servingGrams: Math.round(next),
+      foodUuid: item.foodUuid ?? undefined,
+      burgerSize: item.burgerSize,
+    });
+  };
+
+  const handleSelectBurgerSize = async (item: CafeteriaMealItemModel, size: "P" | "M" | "G" | "GG") => {
+    if (readOnly) return;
+    const gramsMap: Record<string, number> = { P: 135, M: 195, G: 255, GG: 315 };
+    await updateItem(item, {
+      servingGrams: gramsMap[size],
+      burgerSize: size,
+      foodUuid: item.foodUuid ?? undefined,
+    });
   };
 
   const handleSwapFood = async (item: CafeteriaMealItemModel, food: FoodModel) => {
@@ -204,6 +252,8 @@ export function MealReviewCard({ meal, readOnly = false, onItemUpdated }: MealRe
         {items.map((item) => {
           const isEditing = editingItemUuid === item.uuid;
           const isSwapping = swappingItemUuid === item.uuid;
+          const isBurger = isBurgerItem(item);
+          const activeSize = resolveBurgerSize(item);
 
           return (
             <li
@@ -216,8 +266,8 @@ export function MealReviewCard({ meal, readOnly = false, onItemUpdated }: MealRe
             >
               <div className="flex items-center justify-between">
                 <div className="flex-1 min-w-0 pr-2">
-                  <div className="flex items-center gap-1.5">
-                    <span className="font-semibold text-zinc-100 truncate">{item.rawName}</span>
+                  <div className="flex items-center gap-1.5 flex-wrap">
+                    <span className="font-semibold text-zinc-100">{item.rawName}</span>
                     {item.matchedFoodName ? (
                       <span className="text-[10px] text-zinc-500 truncate">({item.matchedFoodName})</span>
                     ) : (
@@ -225,11 +275,15 @@ export function MealReviewCard({ meal, readOnly = false, onItemUpdated }: MealRe
                     )}
                   </div>
                   <div className="flex items-center gap-2 text-[11px] text-zinc-400 mt-0.5">
-                    <span className="text-zinc-300 font-medium">{Math.round(item.servingGrams)}g</span>
+                    <span className="text-amber-400 font-semibold">{Math.round(item.calories || 0)} kcal</span>
                     <span>•</span>
-                    <span>{Math.round(item.calories || 0)} kcal</span>
-                    <span>•</span>
-                    <span className="text-sky-400">{Math.round(item.protein || 0)}g prot</span>
+                    <span className="text-sky-400 font-semibold">{Math.round(item.protein || 0)}g prot</span>
+                    {item.carbohydrates ? (
+                      <>
+                        <span>•</span>
+                        <span className="text-zinc-400">{Math.round(item.carbohydrates)}g carb</span>
+                      </>
+                    ) : null}
                   </div>
                 </div>
 
@@ -272,7 +326,7 @@ export function MealReviewCard({ meal, readOnly = false, onItemUpdated }: MealRe
                             setEditGrams(String(Math.round(item.servingGrams)));
                           }}
                           className="p-1 text-zinc-400 hover:text-zinc-200"
-                          title="Editar gramas"
+                          title="Editar gramas manualmente"
                         >
                           <Edit2 size={13} />
                         </button>
@@ -292,6 +346,64 @@ export function MealReviewCard({ meal, readOnly = false, onItemUpdated }: MealRe
                         </button>
                       </>
                     )}
+                  </div>
+                )}
+              </div>
+
+              {/* Controles de Medida Caseira (- / +) e Seletor Burger P/M/G/GG */}
+              <div className="flex flex-wrap items-center gap-2 mt-2 pt-2 border-t border-zinc-800/60">
+                <div className="flex items-center bg-zinc-900 border border-zinc-800 rounded-lg p-0.5 shadow-inner">
+                  {!readOnly && (
+                    <button
+                      type="button"
+                      aria-label={`Diminuir 1 porção de ${item.rawName}`}
+                      onClick={() => handleStepQuantity(item, -1)}
+                      className="w-7 h-7 flex items-center justify-center rounded-md text-zinc-400 hover:text-zinc-100 hover:bg-zinc-800 text-sm font-bold transition-colors disabled:opacity-30 min-h-[28px] min-w-[28px]"
+                      title="Diminuir 1 porção/medida"
+                      disabled={item.servingGrams <= (item.servingUnitStepGrams || 50)}
+                    >
+                      -
+                    </button>
+                  )}
+                  <span className="px-2 text-xs font-semibold text-amber-300">
+                    {item.servingUnitText || `${Math.round(item.servingGrams)}g`}
+                  </span>
+                  {!readOnly && (
+                    <button
+                      type="button"
+                      aria-label={`Aumentar 1 porção de ${item.rawName}`}
+                      onClick={() => handleStepQuantity(item, 1)}
+                      className="w-7 h-7 flex items-center justify-center rounded-md text-zinc-400 hover:text-zinc-100 hover:bg-zinc-800 text-sm font-bold transition-colors min-h-[28px] min-w-[28px]"
+                      title="Aumentar 1 porção/medida"
+                    >
+                      +
+                    </button>
+                  )}
+                </div>
+
+                {isBurger && (
+                  <div className="flex items-center gap-0.5 bg-zinc-900 border border-zinc-800 rounded-lg p-0.5">
+                    <span className="text-[10px] font-bold text-zinc-400 uppercase px-1.5">Burger:</span>
+                    {(["P", "M", "G", "GG"] as const).map((size) => {
+                      const isActive = activeSize === size;
+                      return (
+                        <button
+                          key={size}
+                          type="button"
+                          disabled={readOnly}
+                          aria-label={`Selecionar Burger Jeronimo tamanho ${size}`}
+                          onClick={() => handleSelectBurgerSize(item, size)}
+                          className={`px-2 py-1 rounded text-[11px] font-bold transition-all min-h-[28px] ${
+                            isActive
+                              ? "bg-brand-500 text-white shadow-sm"
+                              : "text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800"
+                          }`}
+                          title={`Cheeseburger Jeronimo ${size}`}
+                        >
+                          {size}
+                        </button>
+                      );
+                    })}
                   </div>
                 )}
               </div>

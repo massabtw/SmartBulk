@@ -93,6 +93,16 @@ public class CafeteriaMenuController : ControllerBase
         return result.Ok();
     }
 
+    [HttpPost("reprocess")]
+    public async Task<IActionResult> Reprocess(
+        [FromServices] ICafeteriaMenuService service,
+        [FromQuery] DateOnly? weekStartDate,
+        CancellationToken cancellationToken)
+    {
+        var result = await service.ReprocessWeekAsync(weekStartDate, cancellationToken);
+        return result.Ok();
+    }
+
     [HttpPost("{uuid}/reopen")]
     public async Task<IActionResult> Reopen(
         [FromServices] ICafeteriaMenuService service,

@@ -6,13 +6,11 @@ import { Card } from "@/components/Card";
 import { MacroProgressBar } from "@/components/MacroProgressBar";
 import { CreatineToggle } from "@/components/CreatineToggle";
 import { WeightLogger } from "@/components/WeightLogger";
-import { ShakeSuggestionCard } from "@/components/ShakeSuggestionCard";
 import { MealHistoryList } from "@/components/MealHistoryList";
 import { bffGet, bffSend } from "@/lib/bff";
 import { addDaysISO, parseLocalISODate, todayISO } from "@/lib/dates";
 import {
   DailyGapModel,
-  ShakeAdjustmentModel,
   WeightLogModel,
   CreatineLogModel,
   CafeteriaDayOverrideModel,
@@ -26,15 +24,11 @@ export default function TodayPage() {
   const [error, setError] = useState<string | null>(null);
 
   const [gapData, setGapData] = useState<DailyGapModel | null>(null);
-  const [shakeData, setShakeData] = useState<ShakeAdjustmentModel | null>(null);
-  const [shakeMessage, setShakeMessage] = useState<string | null>(null);
   const [latestWeight, setLatestWeight] = useState<number | null>(null);
   const [creatineTaken, setCreatineTaken] = useState(false);
 
   interface DayCacheItem {
     gap: DailyGapModel;
-    shake: ShakeAdjustmentModel | null;
-    shakeMsg: string | null;
     creatine: boolean;
   }
   const dayCache = useRef<Map<string, DayCacheItem>>(new Map());
@@ -46,8 +40,6 @@ export default function TodayPage() {
       const cached = dayCache.current.get(dateStr);
       if (cached && !isBackground) {
         setGapData(cached.gap);
-        setShakeData(cached.shake);
-        setShakeMessage(cached.shakeMsg);
         setCreatineTaken(cached.creatine);
         setLoading(false);
         setRefreshing(true);
@@ -59,9 +51,8 @@ export default function TodayPage() {
 
       setError(null);
 
-      const [gapRes, shakeRes, weightRes, creatineRes] = await Promise.all([
+      const [gapRes, weightRes, creatineRes] = await Promise.all([
         bffGet<DailyGapModel>(`meallog/daily-gap?date=${dateStr}`),
-        bffGet<ShakeAdjustmentModel>(`mealtemplate/shake-adjustment?date=${dateStr}`),
         bffGet<WeightLogModel>("weight/latest"),
         bffGet<CreatineLogModel>(`creatine?date=${dateStr}`),
       ]);
@@ -73,15 +64,9 @@ export default function TodayPage() {
         setGapData(gapRes.data);
         dayCache.current.set(dateStr, {
           gap: gapRes.data,
-          shake: shakeRes.data,
-          shakeMsg: shakeRes.error,
           creatine: creatineRes.data?.taken ?? false,
         });
       }
-
-      // Shake: erro aqui não derruba a tela (ex.: ainda não há template de shake).
-      setShakeData(shakeRes.data);
-      setShakeMessage(shakeRes.error);
 
       // Sem peso registrado (404) é um estado normal.
       setLatestWeight(weightRes.data?.weightKg ?? null);
@@ -293,8 +278,6 @@ export default function TodayPage() {
         <WeightLogger latestWeight={latestWeight} dateStr={dateStr} onWeightSaved={() => loadData(true)} />
         <CreatineToggle initialTaken={creatineTaken} dateStr={dateStr} />
       </div>
-
-      <ShakeSuggestionCard adjustment={shakeData} message={shakeMessage} loading={loading} />
 
       <MealHistoryList meals={gapData?.meals ?? []} onMealDeleted={() => loadData(true)} />
     </main>

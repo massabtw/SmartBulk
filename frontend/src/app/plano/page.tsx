@@ -7,7 +7,7 @@ import { TemplateFormModal } from "@/components/TemplateFormModal";
 import { PlanSlotPickerModal } from "@/components/PlanSlotPickerModal";
 import { bffGet, bffSend } from "@/lib/bff";
 import { addDaysISO, nextMondayISO, parseLocalISODate } from "@/lib/dates";
-import { MealTemplateModel, HomeMealPlanModel } from "@/types/api";
+import { MealTemplateModel, HomeMealPlanModel, HomeMealPlanDayModel } from "@/types/api";
 import {
   ChefHat,
   CalendarRange,
@@ -31,6 +31,33 @@ const slotLabels: Record<string, string> = {
 };
 
 type Draft = Record<string, Record<string, string>>; // date -> slot -> templateUuid
+
+function getSlotIngredients(
+  day: HomeMealPlanDayModel,
+  slot: string,
+  selectedTemplate: MealTemplateModel
+): { name: string; measure: string; calories: number; protein: number }[] {
+  const planItem = day.items?.find((i) => i.mealSlot === slot && i.mealTemplateUuid === selectedTemplate.uuid);
+  if (planItem?.ingredients && planItem.ingredients.length > 0) {
+    return planItem.ingredients.map((ing) => ({
+      name: ing.foodName,
+      measure: ing.servingUnitText || `${Math.round(ing.servingGrams)}g`,
+      calories: ing.calories,
+      protein: ing.protein,
+    }));
+  }
+
+  if (selectedTemplate.items && selectedTemplate.items.length > 0) {
+    return selectedTemplate.items.map((item) => ({
+      name: item.foodName,
+      measure: `${Math.round(item.servingGrams)}g`,
+      calories: item.calories,
+      protein: item.protein,
+    }));
+  }
+
+  return [];
+}
 
 export default function MealPlanPage() {
   const [activeTab, setActiveTab] = useState<"plan" | "templates">("plan");
@@ -350,34 +377,59 @@ export default function MealPlanPage() {
                     {day.requiredSlots.map((slot) => {
                       const selected = dayDraft[slot] ? templateMap.get(dayDraft[slot]) : null;
                       const label = slotLabels[slot] ?? slot;
+                      const ingredients = selected ? getSlotIngredients(day, slot, selected) : [];
 
                       return selected ? (
                         <div
                           key={slot}
-                          className="p-2.5 rounded-xl bg-zinc-950 border border-zinc-800 flex items-center justify-between text-xs"
+                          className="p-3 rounded-xl bg-zinc-950 border border-zinc-800 text-xs space-y-2"
                         >
-                          <div className="min-w-0">
-                            <span className="text-[10px] font-semibold text-zinc-500 uppercase block">{label}</span>
-                            <span className="text-xs font-bold text-zinc-200">{selected.name}</span>
-                            <span className="text-[11px] text-zinc-400 ml-2">
-                              ({Math.round(selected.totalCalories)} kcal • {Math.round(selected.totalProtein)}g)
-                            </span>
+                          <div className="flex items-start justify-between gap-2">
+                            <div className="min-w-0">
+                              <span className="text-[10px] font-semibold text-zinc-500 uppercase block">{label}</span>
+                              <div className="flex items-center gap-2 flex-wrap mt-0.5">
+                                <span className="text-xs font-bold text-zinc-200">{selected.name}</span>
+                                <span className="text-[11px] text-zinc-400">
+                                  ({Math.round(selected.totalCalories)} kcal • {Math.round(selected.totalProtein)}g)
+                                </span>
+                              </div>
+                            </div>
+                            <div className="flex items-center gap-1 shrink-0">
+                              <button
+                                onClick={() => setSlotPicker({ isOpen: true, dateStr: day.date, mealSlot: slot })}
+                                className="text-[11px] text-brand-400 hover:text-brand-300 px-2 py-1 rounded-lg bg-brand-500/10 min-h-[32px] flex items-center"
+                              >
+                                Trocar
+                              </button>
+                              <button
+                                onClick={() => handleRemoveSlotItem(day.date, slot)}
+                                aria-label={`Remover ${label}`}
+                                className="p-1.5 text-zinc-500 hover:text-rose-400 min-h-[32px] flex items-center"
+                              >
+                                <Trash2 size={13} />
+                              </button>
+                            </div>
                           </div>
-                          <div className="flex items-center gap-1 shrink-0">
-                            <button
-                              onClick={() => setSlotPicker({ isOpen: true, dateStr: day.date, mealSlot: slot })}
-                              className="text-[11px] text-brand-400 hover:text-brand-300 px-2 py-1 rounded-lg bg-brand-500/10"
-                            >
-                              Trocar
-                            </button>
-                            <button
-                              onClick={() => handleRemoveSlotItem(day.date, slot)}
-                              aria-label={`Remover ${label}`}
-                              className="p-1 text-zinc-500 hover:text-rose-400"
-                            >
-                              <Trash2 size={13} />
-                            </button>
-                          </div>
+
+                          {ingredients.length > 0 && (
+                            <div className="pt-2 border-t border-zinc-800/80">
+                              <div className="flex flex-wrap gap-1.5">
+                                {ingredients.map((ing, idx) => (
+                                  <span
+                                    key={idx}
+                                    className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-zinc-900 border border-zinc-800 text-[10px] text-zinc-300"
+                                  >
+                                    <span className="font-semibold text-zinc-200">{ing.name}</span>
+                                    <span className="text-zinc-600">:</span>
+                                    <span className="text-amber-400 font-medium">{ing.measure}</span>
+                                    <span className="text-zinc-500">
+                                      ({Math.round(ing.calories)} kcal • {Math.round(ing.protein)}g)
+                                    </span>
+                                  </span>
+                                ))}
+                              </div>
+                            </div>
+                          )}
                         </div>
                       ) : (
                         <button
@@ -432,6 +484,18 @@ export default function MealPlanPage() {
                     <span>•</span>
                     <span>{template.items?.length ?? 0} itens</span>
                   </div>
+                  {template.items && template.items.length > 0 && (
+                    <div className="flex flex-wrap gap-1 mt-2">
+                      {template.items.map((ti) => (
+                        <span
+                          key={ti.uuid}
+                          className="text-[10px] px-1.5 py-0.5 rounded bg-zinc-800/80 text-zinc-300"
+                        >
+                          {ti.foodName} ({Math.round(ti.servingGrams)}g)
+                        </span>
+                      ))}
+                    </div>
+                  )}
                 </div>
                 <button
                   onClick={() => handleDeleteTemplate(template.uuid)}

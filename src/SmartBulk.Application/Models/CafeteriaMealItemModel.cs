@@ -13,4 +13,9 @@ public class CafeteriaMealItemModel
     public decimal Protein { get; set; }
     public decimal Carbohydrates { get; set; }
     public decimal Fat { get; set; }
+
+    public string ServingUnitText { get; set; } = string.Empty;
+    public string ServingUnitType { get; set; } = string.Empty;
+    public decimal ServingUnitStepGrams { get; set; } = 50m;
+    public string? BurgerSize { get; set; }
 }

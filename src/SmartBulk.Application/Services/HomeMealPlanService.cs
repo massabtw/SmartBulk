@@ -97,9 +97,10 @@ public class HomeMealPlanService : IHomeMealPlanService
                 new List<(string FoodName, decimal Calories, decimal Protein, decimal Carbs, decimal Fat, decimal? RawYield, decimal ServingGrams)>
                 {
                     ("Pão de forma integral", 253.00m, 9.40m, 49.90m, 3.70m, null, 100m),
-                    ("Ovo de galinha cozido", 146.00m, 13.30m, 0.60m, 9.50m, null, 150m),
-                    ("Queijo muçarela", 330.00m, 22.60m, 3.00m, 25.20m, null, 40m),
-                    ("Banana prata crua", 98.00m, 1.30m, 26.00m, 0.10m, null, 70m)
+                    ("Peito de peru cozido", 111.00m, 21.00m, 2.00m, 2.00m, null, 80m),
+                    ("Queijo muçarela", 330.00m, 22.60m, 3.00m, 25.20m, null, 60m),
+                    ("Requeijão cremoso", 257.00m, 9.60m, 3.00m, 23.00m, null, 30m),
+                    ("Banana prata crua", 98.00m, 1.30m, 26.00m, 0.10m, null, 140m)
                 },
                 cancellationToken);
 
@@ -208,13 +209,14 @@ public class HomeMealPlanService : IHomeMealPlanService
     private static bool IsBlacklistedFood(string? foodName)
     {
         if (string.IsNullOrWhiteSpace(foodName)) return false;
+        if (FoodMatcherHelper.IsBannedEggOrWhey(foodName)) return true;
+
         var lower = foodName.ToLowerInvariant();
         return lower.Contains("arroz")
             || lower.Contains("feijão")
             || lower.Contains("feijao")
             || lower.Contains("frango")
             || lower.Contains("azeite")
-            || lower.Contains("whey")
             || lower.Contains("suplement")
             || lower.Contains("hipercalor")
             || lower.Contains("creatina")
@@ -231,22 +233,32 @@ public class HomeMealPlanService : IHomeMealPlanService
     {
         var match = existingTemplates.FirstOrDefault(t =>
             string.Equals(t.Name, defaultName, StringComparison.OrdinalIgnoreCase) &&
-            string.Equals(t.MealType, mealType, StringComparison.OrdinalIgnoreCase) &&
-            t.Items != null &&
-            t.Items.Count > 0 &&
-            !t.Items.Any(i => IsBlacklistedFood(i.Food?.Name)));
+            string.Equals(t.MealType, mealType, StringComparison.OrdinalIgnoreCase));
 
-        if (match != null) return match;
+        if (match != null && match.Items != null && match.Items.Count > 0)
+        {
+            var hasBlacklist = match.Items.Any(i => IsBlacklistedFood(i.Food?.Name));
+            if (!hasBlacklist)
+            {
+                return match;
+            }
+        }
 
-        var newTemplate = new MealTemplateEntity
+        var templateId = match?.Id ?? await _unitOfWork.MealTemplate.CreateAsync(new MealTemplateEntity
         {
             Uuid = Guid.NewGuid(),
             Name = defaultName,
             MealType = mealType
-        };
+        }, cancellationToken);
 
-        var templateId = await _unitOfWork.MealTemplate.CreateAsync(newTemplate, cancellationToken);
-        newTemplate.Id = templateId;
+        var targetTemplate = match ?? new MealTemplateEntity
+        {
+            Id = templateId,
+            Uuid = Guid.NewGuid(),
+            Name = defaultName,
+            MealType = mealType,
+            Items = new List<MealTemplateItemEntity>()
+        };
 
         var templateItems = new List<MealTemplateItemEntity>();
         foreach (var itemDef in items)
@@ -268,15 +280,16 @@ public class HomeMealPlanService : IHomeMealPlanService
                 ServingGrams = itemDef.ServingGrams,
                 Food = food
             };
-
-            var itemId = await _unitOfWork.MealTemplate.CreateItemAsync(templateItem, cancellationToken);
-            templateItem.Id = itemId;
             templateItems.Add(templateItem);
         }
 
-        newTemplate.Items = templateItems;
-        existingTemplates.Add(newTemplate);
-        return newTemplate;
+        await _unitOfWork.MealTemplate.ReplaceItemsAsync(templateId, templateItems, cancellationToken);
+        targetTemplate.Items = templateItems;
+        if (match == null)
+        {
+            existingTemplates.Add(targetTemplate);
+        }
+        return targetTemplate;
     }
 
     private async Task<FoodEntity> GetOrCreateFoodAsync(

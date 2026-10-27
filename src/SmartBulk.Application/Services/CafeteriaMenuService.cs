@@ -1,6 +1,7 @@
 using System.Globalization;
 using System.Text;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using FluentValidation;
 using Microsoft.Extensions.Logging;
 using SmartBulk.Application.Helpers;
@@ -149,42 +150,10 @@ public class CafeteriaMenuService : ICafeteriaMenuService
                 var mealId = await _unitOfWork.CafeteriaMenu.CreateMealAsync(mealEntity, cancellationToken);
                 mealEntity.Id = mealId;
 
-                foreach (var extractedItem in extractedMeal.Items)
+                var processedItems = PreprocessExtractedItems(extractedMeal.Items);
+                foreach (var extractedItem in processedItems)
                 {
-                    var matchedFood = FindMatchingFood(extractedItem.Name, allFoods);
-                    if (matchedFood == null)
-                    {
-                        var estKcal = extractedItem.EstimatedKcalPer100g ?? 160m;
-                        var estProt = extractedItem.EstimatedProteinPer100g ?? 12m;
-                        var estCarb = extractedItem.EstimatedCarbsPer100g ?? 16m;
-                        var estFat = extractedItem.EstimatedFatPer100g ?? 6m;
-
-                        var customFood = new FoodEntity
-                        {
-                            Uuid = Guid.NewGuid(),
-                            Name = extractedItem.Name.Trim(),
-                            Calories = Math.Round(estKcal, 2),
-                            Protein = Math.Round(estProt, 2),
-                            Carbohydrates = Math.Round(estCarb, 2),
-                            Fat = Math.Round(estFat, 2),
-                            IsCustom = true,
-                            CreatedAt = DateTimeOffset.UtcNow,
-                            UpdatedAt = DateTimeOffset.UtcNow
-                        };
-
-                        try
-                        {
-                            var createdFoodId = await _unitOfWork.Food.CreateAsync(customFood, cancellationToken);
-                            customFood.Id = createdFoodId;
-                            allFoods.Add(customFood);
-                            matchedFood = customFood;
-                        }
-                        catch (Exception ex)
-                        {
-                            _logger.LogWarning(ex, "Could not auto-cache cafeteria food {Name}. Continuing in-memory.", extractedItem.Name);
-                        }
-                    }
-
+                    var matchedFood = await EnsureFoodForItemAsync(extractedItem.Name, extractedItem, allFoods, cancellationToken);
                     var itemEntity = extractedItem.ToEntity(mealId, matchedFood);
                     itemEntity.IsPending = false;
 
@@ -227,6 +196,26 @@ public class CafeteriaMenuService : ICafeteriaMenuService
             var menu = await _unitOfWork.CafeteriaMenu.GetByWeekStartDateAsync(monday, cancellationToken);
             if (menu is null)
                 return ErrorMessages.EntityNotFound;
+
+            if (menu.Meals != null && menu.Meals.Count > 0)
+            {
+                var needsReprocess = menu.Meals.Any(m => m.Items != null && m.Items.Any(i =>
+                {
+                    var clean = RemoveDiacritics(i.RawName.ToLowerInvariant());
+                    return clean.Contains("arroz/feijao") ||
+                           clean.Contains("arroz e feijao") ||
+                           clean.Contains("arroz / feijao") ||
+                           clean.Contains("arroz/ feijao") ||
+                           clean.Contains("arroz /feijao") ||
+                           i.Food == null ||
+                           i.Food.Calories == 0;
+                }));
+
+                if (needsReprocess)
+                {
+                    return await ReprocessWeekAsync(monday, cancellationToken);
+                }
+            }
 
             return menu.ToModel()!;
         }
@@ -274,27 +263,80 @@ public class CafeteriaMenuService : ICafeteriaMenuService
                 return Result<CafeteriaMealItemModel>.Fail("Cardápio confirmado não pode ser alterado. Reabra o cardápio para fazer alterações.");
             }
 
-            item.ServingGrams = model.ServingGrams;
-            if (!string.IsNullOrWhiteSpace(model.RawName))
+            if (!string.IsNullOrWhiteSpace(model.BurgerSize) || CafeteriaUnitHelper.IsJeronimoBurger(item.RawName))
             {
-                item.RawName = model.RawName.Trim();
+                var burgerSize = !string.IsNullOrWhiteSpace(model.BurgerSize)
+                    ? model.BurgerSize.ToUpperInvariant()
+                    : CafeteriaUnitHelper.GetBurgerSize(model.ServingGrams);
+
+                var burgerMacros = CafeteriaUnitHelper.GetBurgerMacrosBySize(burgerSize);
+                item.ServingGrams = burgerMacros.Grams;
+                item.RawName = "Cheeseburger Jeronimo";
+
+                var allFoods = await LoadAllFoodsAsync(cancellationToken);
+                var burgerFood = allFoods.FirstOrDefault(f => f.Name == $"Cheeseburger Jeronimo {burgerSize}")
+                              ?? allFoods.FirstOrDefault(f => f.Name == "Cheeseburger Jeronimo");
+
+                if (burgerFood == null)
+                {
+                    var per100gKcal = Math.Round((burgerMacros.Calories / burgerMacros.Grams) * 100m, 2);
+                    var per100gProt = Math.Round((burgerMacros.Protein / burgerMacros.Grams) * 100m, 2);
+                    var per100gCarb = Math.Round((burgerMacros.Carbs / burgerMacros.Grams) * 100m, 2);
+                    var per100gFat = Math.Round((burgerMacros.Fat / burgerMacros.Grams) * 100m, 2);
+
+                    burgerFood = new FoodEntity
+                    {
+                        Uuid = Guid.NewGuid(),
+                        Name = $"Cheeseburger Jeronimo {burgerSize}",
+                        Calories = per100gKcal,
+                        Protein = per100gProt,
+                        Carbohydrates = per100gCarb,
+                        Fat = per100gFat,
+                        IsCustom = true,
+                        CreatedAt = DateTimeOffset.UtcNow,
+                        UpdatedAt = DateTimeOffset.UtcNow
+                    };
+                    var newFoodId = await _unitOfWork.Food.CreateAsync(burgerFood, cancellationToken);
+                    burgerFood.Id = newFoodId;
+                }
+
+                item.FoodId = burgerFood.Id;
+                item.Food = burgerFood;
+                item.IsPending = false;
+            }
+            else
+            {
+                item.ServingGrams = model.ServingGrams;
+                if (!string.IsNullOrWhiteSpace(model.RawName))
+                {
+                    item.RawName = model.RawName.Trim();
+                }
+
+                if (model.FoodUuid.HasValue)
+                {
+                    var food = await _unitOfWork.Food.GetByUuidAsync(model.FoodUuid.Value, cancellationToken);
+                    if (food != null)
+                    {
+                        item.FoodId = food.Id;
+                        item.Food = food;
+                        item.IsPending = false;
+                    }
+                    else
+                    {
+                        item.FoodId = null;
+                        item.Food = null;
+                        item.IsPending = true;
+                    }
+                }
             }
 
-            if (model.FoodUuid.HasValue)
+            if (item.Food == null && item.FoodId == null)
             {
-                var food = await _unitOfWork.Food.GetByUuidAsync(model.FoodUuid.Value, cancellationToken);
-                if (food != null)
-                {
-                    item.FoodId = food.Id;
-                    item.Food = food;
-                    item.IsPending = false;
-                }
-                else
-                {
-                    item.FoodId = null;
-                    item.Food = null;
-                    item.IsPending = true;
-                }
+                var allFoods = await LoadAllFoodsAsync(cancellationToken);
+                var food = await EnsureFoodForItemAsync(item.RawName, null, allFoods, cancellationToken);
+                item.FoodId = food.Id;
+                item.Food = food;
+                item.IsPending = false;
             }
 
             var updated = await _unitOfWork.CafeteriaMenu.UpdateMealItemAsync(item, cancellationToken);
@@ -804,6 +846,312 @@ Mapeie cada dia e refeição da imagem/texto diretamente para sua data exata no 
         }
     }
 
+    public async Task<Result<CafeteriaMenuModel>> ReprocessWeekAsync(DateOnly? weekStartDate = null, CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            var monday = weekStartDate.HasValue
+                ? GetWeekMonday(weekStartDate.Value)
+                : GetWeekMonday(await TimeZoneDateHelper.GetUserTodayAsync(_unitOfWork, cancellationToken));
+
+            var menu = await _unitOfWork.CafeteriaMenu.GetByWeekStartDateAsync(monday, cancellationToken);
+            if (menu == null || menu.Meals == null || menu.Meals.Count == 0)
+            {
+                return Result<CafeteriaMenuModel>.Fail("Nenhum cardápio encontrado para reprocessar nesta semana.");
+            }
+
+            var allFoods = await LoadAllFoodsAsync(cancellationToken);
+
+            foreach (var meal in menu.Meals)
+            {
+                if (meal.Items == null) continue;
+
+                // 1. Desmembrar Arroz/Feijão
+                var combinedRiceBeans = meal.Items.Where(i =>
+                {
+                    var n = RemoveDiacritics(i.RawName.ToLowerInvariant());
+                    return n.Contains("arroz/feijao") ||
+                           n.Contains("arroz e feijao") ||
+                           n.Contains("arroz / feijao") ||
+                           n.Contains("arroz/ feijao") ||
+                           n.Contains("arroz /feijao");
+                }).ToList();
+
+                foreach (var combo in combinedRiceBeans)
+                {
+                    await _unitOfWork.CafeteriaMenu.DeleteMealItemAsync(combo.Uuid, cancellationToken);
+                    meal.Items.Remove(combo);
+
+                    var riceFood = await EnsureFoodForItemAsync("Arroz branco cozido", null, allFoods, cancellationToken);
+                    var riceItem = new CafeteriaMealItemEntity
+                    {
+                        Uuid = Guid.NewGuid(),
+                        CafeteriaMealId = meal.Id,
+                        FoodId = riceFood.Id,
+                        Food = riceFood,
+                        RawName = "Arroz branco cozido",
+                        ServingGrams = 180m,
+                        IsPending = false
+                    };
+                    riceItem.Id = await _unitOfWork.CafeteriaMenu.CreateMealItemAsync(riceItem, cancellationToken);
+                    meal.Items.Add(riceItem);
+
+                    var beanFood = await EnsureFoodForItemAsync("Feijão carioca cozido", null, allFoods, cancellationToken);
+                    var beanItem = new CafeteriaMealItemEntity
+                    {
+                        Uuid = Guid.NewGuid(),
+                        CafeteriaMealId = meal.Id,
+                        FoodId = beanFood.Id,
+                        Food = beanFood,
+                        RawName = "Feijão carioca cozido",
+                        ServingGrams = 140m,
+                        IsPending = false
+                    };
+                    beanItem.Id = await _unitOfWork.CafeteriaMenu.CreateMealItemAsync(beanItem, cancellationToken);
+                    meal.Items.Add(beanItem);
+                }
+
+                // 2. Unificar Burger do Jeronimo se houver hambúrguer ou componentes separados
+                var burgerItems = meal.Items.Where(i =>
+                {
+                    var n = RemoveDiacritics(i.RawName.ToLowerInvariant());
+                    return n.Contains("pao brioche") || n.Contains("hamburguer") || n.Contains("burger") || n.Contains("maionese");
+                }).ToList();
+
+                var hasBurgerIndicator = meal.Items.Any(i =>
+                {
+                    var n = RemoveDiacritics(i.RawName.ToLowerInvariant());
+                    return n.Contains("hamburguer") || n.Contains("burger") || n.Contains("smash");
+                });
+
+                if (hasBurgerIndicator && burgerItems.Count > 1)
+                {
+                    var alreadyHasJeronimo = meal.Items.Any(i => i.RawName.Contains("Cheeseburger Jeronimo", StringComparison.OrdinalIgnoreCase));
+                    if (!alreadyHasJeronimo)
+                    {
+                        foreach (var bi in burgerItems)
+                        {
+                            await _unitOfWork.CafeteriaMenu.DeleteMealItemAsync(bi.Uuid, cancellationToken);
+                            meal.Items.Remove(bi);
+                        }
+
+                        var burgerMacros = CafeteriaUnitHelper.GetBurgerMacrosBySize("M");
+                        var burgerFood = await EnsureFoodForItemAsync("Cheeseburger Jeronimo", null, allFoods, cancellationToken);
+                        var burgerItem = new CafeteriaMealItemEntity
+                        {
+                            Uuid = Guid.NewGuid(),
+                            CafeteriaMealId = meal.Id,
+                            FoodId = burgerFood.Id,
+                            Food = burgerFood,
+                            RawName = "Cheeseburger Jeronimo",
+                            ServingGrams = burgerMacros.Grams,
+                            IsPending = false
+                        };
+                        burgerItem.Id = await _unitOfWork.CafeteriaMenu.CreateMealItemAsync(burgerItem, cancellationToken);
+                        meal.Items.Add(burgerItem);
+                    }
+                }
+
+                // 3. Garantir que todo item tenha Food associado com macros reais (nunca 0 kcal ou sem alimento)
+                foreach (var item in meal.Items)
+                {
+                    var needsNewFood = item.Food == null
+                        || item.FoodId == null
+                        || item.Food.Calories == 0
+                        || IsCruMismatch(item.RawName, item.Food.Name)
+                        || (item.RawName.Contains("frita", StringComparison.OrdinalIgnoreCase) && item.Food.Name.Contains("doce", StringComparison.OrdinalIgnoreCase));
+
+                    if (needsNewFood)
+                    {
+                        var correctFood = await EnsureFoodForItemAsync(item.RawName, null, allFoods, cancellationToken);
+                        item.FoodId = correctFood.Id;
+                        item.Food = correctFood;
+                        item.IsPending = false;
+                        await _unitOfWork.CafeteriaMenu.UpdateMealItemAsync(item, cancellationToken);
+                    }
+                }
+            }
+
+            var reloaded = await _unitOfWork.CafeteriaMenu.GetByWeekStartDateAsync(monday, cancellationToken);
+            return (reloaded ?? menu).ToModel()!;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Erro ao reprocessar cardápio da semana.");
+            return ErrorMessages.UnknownError;
+        }
+    }
+
+    private static List<CafeteriaLlmItemExtractionModel> PreprocessExtractedItems(List<CafeteriaLlmItemExtractionModel>? rawItems)
+    {
+        if (rawItems == null || rawItems.Count == 0) return new List<CafeteriaLlmItemExtractionModel>();
+
+        var result = new List<CafeteriaLlmItemExtractionModel>();
+        var hasBurgerComponent = false;
+
+        // 1. Desmembrar Arroz/Feijão
+        foreach (var item in rawItems)
+        {
+            var cleanName = RemoveDiacritics(item.Name ?? "").ToLowerInvariant();
+
+            if (cleanName.Contains("arroz/feijao") ||
+                cleanName.Contains("arroz / feijao") ||
+                cleanName.Contains("arroz e feijao") ||
+                cleanName.Contains("arroz/ feijao") ||
+                cleanName.Contains("arroz /feijao"))
+            {
+                result.Add(new CafeteriaLlmItemExtractionModel
+                {
+                    Name = "Arroz branco cozido",
+                    Grams = 180m, // 3 colheres de servir (60g cada)
+                    EstimatedKcalPer100g = 128m,
+                    EstimatedProteinPer100g = 2.5m,
+                    EstimatedCarbsPer100g = 28.1m,
+                    EstimatedFatPer100g = 0.2m
+                });
+                result.Add(new CafeteriaLlmItemExtractionModel
+                {
+                    Name = "Feijão carioca cozido",
+                    Grams = 140m, // 1 concha média
+                    EstimatedKcalPer100g = 76m,
+                    EstimatedProteinPer100g = 4.8m,
+                    EstimatedCarbsPer100g = 13.6m,
+                    EstimatedFatPer100g = 0.5m
+                });
+                continue;
+            }
+
+            if (cleanName.Contains("pao brioche") || cleanName.Contains("pao de brioche") ||
+                cleanName.Contains("hamburguer") || cleanName.Contains("burger") ||
+                (cleanName.Contains("carne") && cleanName.Contains("bovino") && cleanName.Contains("hamburguer")))
+            {
+                hasBurgerComponent = true;
+            }
+
+            result.Add(item);
+        }
+
+        // 2. Unificar Burger do Jeronimo se houver hambúrguer ou componentes
+        if (hasBurgerComponent)
+        {
+            var filtered = new List<CafeteriaLlmItemExtractionModel>();
+            var burgerAdded = false;
+
+            foreach (var item in result)
+            {
+                var clean = RemoveDiacritics(item.Name ?? "").ToLowerInvariant();
+                var isBrioche = clean.Contains("pao brioche") || clean.Contains("pao de brioche");
+                var isBurgerPatty = clean.Contains("hamburguer") || clean.Contains("burger") || clean.Contains("smash");
+                var isMayo = clean.Contains("maionese");
+
+                if (isBrioche || isBurgerPatty || isMayo)
+                {
+                    if (!burgerAdded)
+                    {
+                        filtered.Add(new CafeteriaLlmItemExtractionModel
+                        {
+                            Name = "Cheeseburger Jeronimo",
+                            Grams = 195m, // Padrão M
+                            EstimatedKcalPer100g = 276.92m,
+                            EstimatedProteinPer100g = 14.87m,
+                            EstimatedCarbsPer100g = 15.38m,
+                            EstimatedFatPer100g = 17.44m
+                        });
+                        burgerAdded = true;
+                    }
+                }
+                else
+                {
+                    filtered.Add(item);
+                }
+            }
+            result = filtered;
+        }
+
+        return result;
+    }
+
+    private async Task<FoodEntity> EnsureFoodForItemAsync(
+        string itemName,
+        CafeteriaLlmItemExtractionModel? extracted,
+        List<FoodEntity> allFoods,
+        CancellationToken cancellationToken)
+    {
+        var matched = FindMatchingFood(itemName, allFoods);
+        if (matched != null) return matched;
+
+        var (kcal, prot, carb, fat) = GetDefaultMacrosForDish(itemName, extracted);
+        var customFood = new FoodEntity
+        {
+            Uuid = Guid.NewGuid(),
+            Name = itemName.Trim(),
+            Calories = Math.Round(kcal, 2),
+            Protein = Math.Round(prot, 2),
+            Carbohydrates = Math.Round(carb, 2),
+            Fat = Math.Round(fat, 2),
+            IsCustom = true,
+            CreatedAt = DateTimeOffset.UtcNow,
+            UpdatedAt = DateTimeOffset.UtcNow
+        };
+
+        try
+        {
+            var createdId = await _unitOfWork.Food.CreateAsync(customFood, cancellationToken);
+            customFood.Id = createdId;
+            allFoods.Add(customFood);
+            return customFood;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Could not persist custom food {Name}. Using in-memory fallback.", itemName);
+            return customFood;
+        }
+    }
+
+    private static (decimal Kcal, decimal Prot, decimal Carb, decimal Fat) GetDefaultMacrosForDish(
+        string dishName,
+        CafeteriaLlmItemExtractionModel? extracted)
+    {
+        var clean = RemoveDiacritics(dishName.ToLowerInvariant());
+
+        if (CafeteriaUnitHelper.IsJeronimoBurger(clean))
+        {
+            return (276.92m, 14.87m, 15.38m, 17.44m);
+        }
+        if (clean.Contains("pudim"))
+        {
+            return (210m, 5.0m, 32.0m, 7.0m);
+        }
+        if (clean.Contains("fruta") || clean.Contains("salada de fruta") || clean.Contains("maca") || clean.Contains("melancia") || clean.Contains("abacaxi"))
+        {
+            return (55m, 0.8m, 14.0m, 0.2m);
+        }
+        if (clean.Contains("docinho") || clean.Contains("brigadeiro") || clean.Contains("beijinho") || clean.Contains("doce"))
+        {
+            return (380m, 5.0m, 58.0m, 15.0m);
+        }
+        if (clean.Contains("maionese"))
+        {
+            return (330m, 1.0m, 8.0m, 34.0m);
+        }
+        if (clean.Contains("batata frita") || clean.Contains("polenta frita") || clean.Contains("mandioca frita"))
+        {
+            return (290m, 3.5m, 36.0m, 15.0m);
+        }
+        if (clean.Contains("macarrao") || clean.Contains("espaguete") || clean.Contains("penne") || clean.Contains("massa"))
+        {
+            return (160m, 4.5m, 28.0m, 3.5m);
+        }
+
+        var estKcal = extracted?.EstimatedKcalPer100g ?? 160m;
+        var estProt = extracted?.EstimatedProteinPer100g ?? 10m;
+        var estCarb = extracted?.EstimatedCarbsPer100g ?? 18m;
+        var estFat = extracted?.EstimatedFatPer100g ?? 5m;
+
+        if (estKcal <= 0) estKcal = 160m;
+        return (estKcal, estProt, estCarb, estFat);
+    }
+
     private static FoodEntity? FindMatchingFood(string rawName, IEnumerable<FoodEntity> foods)
     {
         if (string.IsNullOrWhiteSpace(rawName)) return null;
@@ -811,70 +1159,135 @@ Mapeie cada dia e refeição da imagem/texto diretamente para sua data exata no 
         var foodList = foods as IList<FoodEntity> ?? foods.ToList();
         var clean = RemoveDiacritics(rawName.Trim()).ToLowerInvariant();
 
-        // Exact match (accent-insensitive)
+        // Cheeseburger Jeronimo check
+        if (CafeteriaUnitHelper.IsJeronimoBurger(clean))
+        {
+            return foodList.FirstOrDefault(f =>
+                f.Name.Contains("Cheeseburger Jeronimo", StringComparison.OrdinalIgnoreCase) ||
+                f.Name.Contains("Jeronimo", StringComparison.OrdinalIgnoreCase));
+        }
+
+        // Batata frita vs Batata doce
+        if (clean.Contains("batata frita") || clean.Contains("frita"))
+        {
+            return foodList.FirstOrDefault(f =>
+                RemoveDiacritics(f.Name).Contains("batata frita", StringComparison.OrdinalIgnoreCase));
+        }
+
+        if (clean.Contains("batata") && clean.Contains("doce"))
+        {
+            return foodList.FirstOrDefault(f =>
+                RemoveDiacritics(f.Name).Contains("batata, doce", StringComparison.OrdinalIgnoreCase) ||
+                (RemoveDiacritics(f.Name).Contains("batata", StringComparison.OrdinalIgnoreCase) &&
+                 RemoveDiacritics(f.Name).Contains("doce", StringComparison.OrdinalIgnoreCase)));
+        }
+
+        // Macarrão / Massa: NUNCA associar prato pronto cozido com "cru"
+        if (clean.Contains("macarrao") || clean.Contains("espaguete") || clean.Contains("penne") || clean.Contains("massa"))
+        {
+            var cookedPasta = foodList.FirstOrDefault(f =>
+            {
+                var n = RemoveDiacritics(f.Name).ToLowerInvariant();
+                return (n.Contains("macarrao") || n.Contains("espaguete") || n.Contains("massa"))
+                    && (n.Contains("cozido") || n.Contains("preparado") || n.Contains("molho") || n.Contains("alho"));
+            });
+            if (cookedPasta != null) return cookedPasta;
+            return null;
+        }
+
+        // Exact match (accent-insensitive, not raw mismatch)
         var exact = foodList.FirstOrDefault(f =>
             RemoveDiacritics(f.Name).Equals(clean, StringComparison.OrdinalIgnoreCase));
-        if (exact != null) return exact;
+        if (exact != null && !IsCruMismatch(clean, exact.Name)) return exact;
 
-        // Substring match (accent-insensitive)
+        // Substring match
         var contains = foodList.FirstOrDefault(f =>
         {
             var normalizedFood = RemoveDiacritics(f.Name).ToLowerInvariant();
+            if (IsCruMismatch(clean, normalizedFood)) return false;
+            if (clean.Contains("batata") && normalizedFood.Contains("doce") && !clean.Contains("doce")) return false;
             return clean.Contains(normalizedFood) || normalizedFood.Contains(clean);
         });
         if (contains != null) return contains;
 
         // Common keyword heuristics
         if (clean.Contains("frango") || clean.Contains("galinha"))
-            return foodList.FirstOrDefault(f => RemoveDiacritics(f.Name).Contains("frango", StringComparison.OrdinalIgnoreCase));
+        {
+            var match = foodList.FirstOrDefault(f =>
+            {
+                var n = RemoveDiacritics(f.Name).ToLowerInvariant();
+                return (n.Contains("frango") || n.Contains("galinha")) && !IsCruMismatch(clean, n);
+            });
+            if (match != null) return match;
+        }
 
         if (clean.Contains("carne") || clean.Contains("patinho") || clean.Contains("bife") || clean.Contains("alcatra"))
-            return foodList.FirstOrDefault(f =>
-                RemoveDiacritics(f.Name).Contains("carne", StringComparison.OrdinalIgnoreCase) ||
-                RemoveDiacritics(f.Name).Contains("patinho", StringComparison.OrdinalIgnoreCase));
+        {
+            var match = foodList.FirstOrDefault(f =>
+            {
+                var n = RemoveDiacritics(f.Name).ToLowerInvariant();
+                return (n.Contains("carne") || n.Contains("patinho") || n.Contains("alcatra") || n.Contains("bife"))
+                    && !IsCruMismatch(clean, n);
+            });
+            if (match != null) return match;
+        }
 
         if (clean.Contains("arroz"))
-            return foodList.FirstOrDefault(f => RemoveDiacritics(f.Name).Contains("arroz", StringComparison.OrdinalIgnoreCase));
+        {
+            var match = foodList.FirstOrDefault(f =>
+            {
+                var n = RemoveDiacritics(f.Name).ToLowerInvariant();
+                return n.Contains("arroz") && !IsCruMismatch(clean, n);
+            });
+            if (match != null) return match;
+        }
 
         if (clean.Contains("feijao"))
-            return foodList.FirstOrDefault(f => RemoveDiacritics(f.Name).Contains("feijao", StringComparison.OrdinalIgnoreCase));
-
-        if (clean.Contains("ovo"))
-            return foodList.FirstOrDefault(f => RemoveDiacritics(f.Name).Contains("ovo", StringComparison.OrdinalIgnoreCase));
-
-        if (clean.Contains("batata"))
-            return foodList.FirstOrDefault(f => RemoveDiacritics(f.Name).Contains("batata", StringComparison.OrdinalIgnoreCase));
-
-        if (clean.Contains("macarrao") || clean.Contains("massa") || clean.Contains("espaguete"))
-            return foodList.FirstOrDefault(f => RemoveDiacritics(f.Name).Contains("macarrao", StringComparison.OrdinalIgnoreCase));
+        {
+            var match = foodList.FirstOrDefault(f =>
+            {
+                var n = RemoveDiacritics(f.Name).ToLowerInvariant();
+                return n.Contains("feijao") && !IsCruMismatch(clean, n);
+            });
+            if (match != null) return match;
+        }
 
         if (clean.Contains("tilapia") || clean.Contains("peixe"))
-            return foodList.FirstOrDefault(f => RemoveDiacritics(f.Name).Contains("tilapia", StringComparison.OrdinalIgnoreCase));
+        {
+            var match = foodList.FirstOrDefault(f =>
+            {
+                var n = RemoveDiacritics(f.Name).ToLowerInvariant();
+                return (n.Contains("tilapia") || n.Contains("peixe")) && !IsCruMismatch(clean, n);
+            });
+            if (match != null) return match;
+        }
 
         if (clean.Contains("brocolis"))
-            return foodList.FirstOrDefault(f => RemoveDiacritics(f.Name).Contains("brocolis", StringComparison.OrdinalIgnoreCase));
+        {
+            var match = foodList.FirstOrDefault(f =>
+            {
+                var n = RemoveDiacritics(f.Name).ToLowerInvariant();
+                return n.Contains("brocolis") && !IsCruMismatch(clean, n);
+            });
+            if (match != null) return match;
+        }
 
         return null;
     }
 
-    private static string RemoveDiacritics(string text)
+    private static bool IsCruMismatch(string rawText, string foodNameText)
     {
-        if (string.IsNullOrEmpty(text))
-            return string.Empty;
+        var rawNorm = FoodMatcherHelper.RemoveDiacritics(rawText).ToLowerInvariant();
+        var foodNorm = FoodMatcherHelper.RemoveDiacritics(foodNameText).ToLowerInvariant();
 
-        var normalized = text.Normalize(NormalizationForm.FormD);
-        var sb = new StringBuilder(normalized.Length);
+        var foodIsCru = Regex.IsMatch(foodNorm, @"\b(cru|crua|crus|cruas)\b", RegexOptions.IgnoreCase);
+        if (!foodIsCru) return false;
 
-        foreach (var c in normalized)
-        {
-            if (CharUnicodeInfo.GetUnicodeCategory(c) != UnicodeCategory.NonSpacingMark)
-            {
-                sb.Append(c);
-            }
-        }
-
-        return sb.ToString().Normalize(NormalizationForm.FormC);
+        var rawExplicitlyCru = Regex.IsMatch(rawNorm, @"\b(cru|crua|crus|cruas)\b", RegexOptions.IgnoreCase);
+        return !rawExplicitlyCru;
     }
+
+    public static string RemoveDiacritics(string text) => FoodMatcherHelper.RemoveDiacritics(text);
 
     private static string NormalizeMealType(string? mealType)
     {

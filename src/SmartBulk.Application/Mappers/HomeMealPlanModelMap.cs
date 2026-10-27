@@ -1,3 +1,4 @@
+using SmartBulk.Application.Helpers;
 using SmartBulk.Application.Models;
 using SmartBulk.Domain.Constants;
 using SmartBulk.Domain.Entities;
@@ -11,6 +12,7 @@ public static class HomeMealPlanModelMap
     {
         var template = entity.MealTemplate;
         var totalNutrition = NutritionalValue.Zero;
+        var ingredients = new List<HomeMealPlanItemIngredientModel>();
 
         if (template?.Items != null)
         {
@@ -18,13 +20,25 @@ public static class HomeMealPlanModelMap
             {
                 if (item.Food != null)
                 {
-                    totalNutrition = totalNutrition.Add(
-                        NutritionalValue.FromPer100G(
-                            item.Food.Calories,
-                            item.Food.Protein,
-                            item.Food.Carbohydrates,
-                            item.Food.Fat,
-                            item.ServingGrams));
+                    var nv = NutritionalValue.FromPer100G(
+                        item.Food.Calories,
+                        item.Food.Protein,
+                        item.Food.Carbohydrates,
+                        item.Food.Fat,
+                        item.ServingGrams);
+
+                    totalNutrition = totalNutrition.Add(nv);
+
+                    ingredients.Add(new HomeMealPlanItemIngredientModel
+                    {
+                        FoodName = item.Food.Name,
+                        ServingGrams = item.ServingGrams,
+                        ServingUnitText = CafeteriaUnitHelper.FormatIngredientPractical(item.Food.Name, item.ServingGrams),
+                        Calories = Math.Round(nv.Calories, 2),
+                        Protein = Math.Round(nv.Protein, 2),
+                        Carbohydrates = Math.Round(nv.Carbohydrates, 2),
+                        Fat = Math.Round(nv.Fat, 2)
+                    });
                 }
             }
         }
@@ -40,7 +54,8 @@ public static class HomeMealPlanModelMap
             Calories = Math.Round(totalNutrition.Calories, 2),
             Protein = Math.Round(totalNutrition.Protein, 2),
             Carbohydrates = Math.Round(totalNutrition.Carbohydrates, 2),
-            Fat = Math.Round(totalNutrition.Fat, 2)
+            Fat = Math.Round(totalNutrition.Fat, 2),
+            Ingredients = ingredients
         };
     }
 

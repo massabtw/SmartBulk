@@ -20,4 +20,5 @@ public interface ICafeteriaMenuService
     Task<Result<CafeteriaDayOverrideModel>> GetDayOverrideAsync(DateOnly? date = null, CancellationToken cancellationToken = default);
     Task<Result<CafeteriaDayOverrideModel>> SetDayOverrideAsync(CafeteriaDayOverrideUpsertModel model, CancellationToken cancellationToken = default);
     Task<Result> DeleteDayOverrideAsync(DateOnly date, CancellationToken cancellationToken = default);
+    Task<Result<CafeteriaMenuModel>> ReprocessWeekAsync(DateOnly? weekStartDate = null, CancellationToken cancellationToken = default);
 }

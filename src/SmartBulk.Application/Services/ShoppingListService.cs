@@ -95,7 +95,7 @@ public class ShoppingListService : IShoppingListService
 
                 foreach (var templateItem in planItem.MealTemplate.Items)
                 {
-                    if (templateItem.Food == null) continue;
+                    if (templateItem.Food == null || FoodMatcherHelper.IsBannedEggOrWhey(templateItem.Food.Name)) continue;
 
                     var foodId = templateItem.FoodId;
                     if (plannedGramsByFood.TryGetValue(foodId, out var existing))
@@ -230,21 +230,24 @@ public class ShoppingListService : IShoppingListService
             (item.MealTemplate.Name.Contains("Padrão", StringComparison.OrdinalIgnoreCase) ||
              item.MealTemplate.Name.Contains("Completo", StringComparison.OrdinalIgnoreCase) ||
              item.MealTemplate.Name.Contains("Shake", StringComparison.OrdinalIgnoreCase) ||
-             item.MealTemplate.Name.Contains("Hipercalórico", StringComparison.OrdinalIgnoreCase)) &&
+             item.MealTemplate.Name.Contains("Hipercalórico", StringComparison.OrdinalIgnoreCase) ||
+             item.MealTemplate.Name.Contains("Sem Fogão", StringComparison.OrdinalIgnoreCase) ||
+             item.MealTemplate.Name.Contains("Sem Fogao", StringComparison.OrdinalIgnoreCase)) &&
             item.MealTemplate.Items != null &&
-            item.MealTemplate.Items.Any(ti => IsBlacklistedFood(ti.Food?.Name)));
+            item.MealTemplate.Items.Any(ti => IsLegacyBlacklistedFood(ti.Food?.Name)));
     }
 
-    private static bool IsBlacklistedFood(string? foodName)
+    private static bool IsLegacyBlacklistedFood(string? foodName)
     {
         if (string.IsNullOrWhiteSpace(foodName)) return false;
+        if (FoodMatcherHelper.IsBannedEggOrWhey(foodName)) return true;
+
         var lower = foodName.ToLowerInvariant();
         return lower.Contains("arroz")
             || lower.Contains("feijão")
             || lower.Contains("feijao")
             || lower.Contains("frango")
             || lower.Contains("azeite")
-            || lower.Contains("whey")
             || lower.Contains("suplement")
             || lower.Contains("hipercalor")
             || lower.Contains("creatina")

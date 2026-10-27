@@ -1,5 +1,6 @@
 using System.Globalization;
 using System.Text;
+using System.Text.RegularExpressions;
 using SmartBulk.Domain.Entities;
 
 namespace SmartBulk.Application.Helpers;
@@ -27,8 +28,8 @@ public static class FoodMatcherHelper
         if (contains != null) return contains;
 
         // 3. Keyword heuristics
-        if (clean.Contains("ovo"))
-            return foodList.FirstOrDefault(f => RemoveDiacritics(f.Name).Contains("ovo", StringComparison.OrdinalIgnoreCase));
+        if (Regex.IsMatch(clean, @"\b(ovos?|claras?|gemas?|omeletes?)\b"))
+            return foodList.FirstOrDefault(f => Regex.IsMatch(RemoveDiacritics(f.Name), @"\b(ovos?|claras?|gemas?|omeletes?)\b", RegexOptions.IgnoreCase));
 
         if (clean.Contains("pao") || clean.Contains("paes"))
             return foodList.FirstOrDefault(f =>
@@ -56,8 +57,8 @@ public static class FoodMatcherHelper
         if (clean.Contains("banana"))
             return foodList.FirstOrDefault(f => RemoveDiacritics(f.Name).Contains("banana", StringComparison.OrdinalIgnoreCase));
 
-        if (clean.Contains("maca"))
-            return foodList.FirstOrDefault(f => RemoveDiacritics(f.Name).Contains("maca", StringComparison.OrdinalIgnoreCase));
+        if (Regex.IsMatch(clean, @"\bmaca(s)?\b"))
+            return foodList.FirstOrDefault(f => Regex.IsMatch(RemoveDiacritics(f.Name), @"\bmaca(s)?\b", RegexOptions.IgnoreCase));
 
         if (clean.Contains("aveia"))
             return foodList.FirstOrDefault(f => RemoveDiacritics(f.Name).Contains("aveia", StringComparison.OrdinalIgnoreCase));
@@ -108,6 +109,13 @@ public static class FoodMatcherHelper
         }
 
         return sb.ToString().Normalize(NormalizationForm.FormC);
+    }
+
+    public static bool IsBannedEggOrWhey(string? foodName)
+    {
+        if (string.IsNullOrWhiteSpace(foodName)) return false;
+        var clean = RemoveDiacritics(foodName.Trim()).ToLowerInvariant();
+        return Regex.IsMatch(clean, @"\b(ovos?|claras?|gemas?|omeletes?|whey)\b", RegexOptions.IgnoreCase);
     }
 }
 

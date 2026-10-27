@@ -33,6 +33,7 @@ export default function CafeteriaMenuPage() {
   const [hasCafeteriaByDate, setHasCafeteriaByDate] = useState<Record<string, boolean>>({});
   const [includeDinnerByDate, setIncludeDinnerByDate] = useState<Record<string, boolean>>({});
   const [confirming, setConfirming] = useState(false);
+  const [reprocessing, setReprocessing] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
 
   interface MenuCacheItem {
@@ -140,6 +141,19 @@ export default function CafeteriaMenuPage() {
     await loadWeek(true);
   };
 
+  const handleReprocessMenu = async () => {
+    if (reprocessing) return;
+    setReprocessing(true);
+    setActionError(null);
+    const res = await bffSend<CafeteriaMenuModel>("POST", `cafeteriamenu/reprocess?weekStartDate=${weekMonday}`, {});
+    setReprocessing(false);
+    if (res.error) {
+      setActionError(res.error);
+      return;
+    }
+    await loadWeek(true);
+  };
+
   const handleToggleDayCafeteria = async (dateStr: string) => {
     const current = hasCafeteriaByDate[dateStr] ?? true;
     const next = !current;
@@ -206,6 +220,17 @@ export default function CafeteriaMenuPage() {
             >
               <RefreshCw size={16} />
             </button>
+            {menu && !isConfirmed && (
+              <button
+                onClick={handleReprocessMenu}
+                disabled={reprocessing}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-zinc-800 hover:bg-zinc-700 text-zinc-200 font-semibold text-xs transition-colors border border-zinc-700 disabled:opacity-50"
+                title="Reaplica separação de Arroz+Feijão, Cheeseburger Jeronimo e medidas caseiras"
+              >
+                <RefreshCw size={13} className={reprocessing ? "animate-spin text-brand-400" : ""} />
+                <span>{reprocessing ? "Reprocessando…" : "Reprocessar"}</span>
+              </button>
+            )}
             {menu && !isConfirmed && (
               <button
                 onClick={handleConfirmMenu}
