@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState, useCallback, useRef } from "react";
 import { PageHeader } from "@/components/PageHeader";
 import { Card } from "@/components/Card";
 import { MenuIngestModal } from "@/components/MenuIngestModal";
@@ -35,6 +35,13 @@ export default function CafeteriaMenuPage() {
   const [confirming, setConfirming] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
 
+  interface MenuCacheItem {
+    menu: CafeteriaMenuModel | null;
+    flags: Record<string, boolean>;
+    dinnerFlags: Record<string, boolean>;
+  }
+  const menuCache = useRef<Map<string, MenuCacheItem>>(new Map());
+
   const weekDays = [0, 1, 2, 3, 4].map((i) => {
     const dateStr = addDaysISO(weekMonday, i);
     const label = parseLocalISODate(dateStr).toLocaleDateString("pt-BR", { weekday: "short" });
@@ -43,8 +50,18 @@ export default function CafeteriaMenuPage() {
 
   const loadWeek = useCallback(
     async (isBackground = false) => {
-      if (!isBackground) setLoading(true);
-      else setRefreshing(true);
+      const cached = menuCache.current.get(weekMonday);
+      if (cached && !isBackground) {
+        setMenu(cached.menu);
+        setHasCafeteriaByDate(cached.flags);
+        setIncludeDinnerByDate(cached.dinnerFlags);
+        setLoading(false);
+        setRefreshing(true);
+      } else if (!isBackground && !menuCache.current.has(weekMonday)) {
+        setLoading(true);
+      } else {
+        setRefreshing(true);
+      }
 
       const days = [0, 1, 2, 3, 4].map((i) => addDaysISO(weekMonday, i));
       const [menuRes, ...overrideRes] = await Promise.all([
@@ -73,6 +90,12 @@ export default function CafeteriaMenuPage() {
       });
       setHasCafeteriaByDate(flags);
       setIncludeDinnerByDate(dinnerFlags);
+
+      menuCache.current.set(weekMonday, {
+        menu: menuRes.data,
+        flags,
+        dinnerFlags,
+      });
 
       setLoading(false);
       setRefreshing(false);
@@ -207,7 +230,7 @@ export default function CafeteriaMenuPage() {
       <div className="flex items-center justify-between px-3 py-1.5 bg-surface-card border border-border/80 rounded-xl text-xs">
         <button
           onClick={() => setWeekMonday(addDaysISO(weekMonday, -7))}
-          className="p-1 rounded-lg text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800 transition-colors flex items-center gap-1"
+          className="px-2 py-1 rounded-lg text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800 transition-colors flex items-center gap-1 min-h-[36px]"
         >
           <ChevronLeft size={16} />
           <span>Anterior</span>
@@ -215,7 +238,7 @@ export default function CafeteriaMenuPage() {
         <span className="font-semibold text-zinc-200">Semana Seg {weekMonday.slice(5)}</span>
         <button
           onClick={() => setWeekMonday(addDaysISO(weekMonday, 7))}
-          className="p-1 rounded-lg text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800 transition-colors flex items-center gap-1"
+          className="px-2 py-1 rounded-lg text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800 transition-colors flex items-center gap-1 min-h-[36px]"
         >
           <span>Próxima</span>
           <ChevronRight size={16} />
@@ -299,7 +322,7 @@ export default function CafeteriaMenuPage() {
               role="tab"
               aria-selected={isSelected}
               onClick={() => setActiveDayIndex(idx)}
-              className={`py-2 px-1 rounded-xl text-center transition-all ${
+              className={`py-2 px-1 rounded-xl text-center transition-colors duration-150 min-h-[44px] flex flex-col items-center justify-center ${
                 isSelected
                   ? "bg-brand-500/15 border border-brand-500/30 text-brand-300 font-bold"
                   : "text-zinc-400 hover:text-zinc-200"

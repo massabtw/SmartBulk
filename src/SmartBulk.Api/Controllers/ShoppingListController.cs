@@ -27,7 +27,7 @@ public class ShoppingListController : ControllerBase
         [FromBody] ShoppingListGenerateModel? model,
         CancellationToken cancellationToken)
     {
-        var result = await service.GenerateFromPlanAsync(model?.WeekStartDate, cancellationToken);
+        var result = await service.GenerateFromPlanAsync(model?.WeekStartDate, model?.ForceRegeneratePlan ?? false, cancellationToken);
         return result.Ok();
     }
 

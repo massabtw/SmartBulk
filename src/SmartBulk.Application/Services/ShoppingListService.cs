@@ -12,13 +12,16 @@ namespace SmartBulk.Application.Services;
 public class ShoppingListService : IShoppingListService
 {
     private readonly IUnitOfWorkApp _unitOfWork;
+    private readonly IHomeMealPlanService _homeMealPlanService;
     private readonly ILogger<ShoppingListService> _logger;
 
     public ShoppingListService(
         IUnitOfWorkApp unitOfWork,
+        IHomeMealPlanService homeMealPlanService,
         ILogger<ShoppingListService> logger)
     {
         _unitOfWork = unitOfWork;
+        _homeMealPlanService = homeMealPlanService;
         _logger = logger;
     }
 
@@ -45,7 +48,10 @@ public class ShoppingListService : IShoppingListService
         }
     }
 
-    public async Task<Result<ShoppingListModel>> GenerateFromPlanAsync(DateOnly? weekStartDate = null, CancellationToken cancellationToken = default)
+    public async Task<Result<ShoppingListModel>> GenerateFromPlanAsync(
+        DateOnly? weekStartDate = null,
+        bool forceRegeneratePlan = false,
+        CancellationToken cancellationToken = default)
     {
         try
         {
@@ -54,6 +60,28 @@ public class ShoppingListService : IShoppingListService
                 : TimeZoneDateHelper.GetWeekMonday(await TimeZoneDateHelper.GetUserTodayAsync(_unitOfWork, cancellationToken));
 
             var plan = await _unitOfWork.HomeMealPlan.GetByWeekStartDateAsync(monday, cancellationToken);
+            var shouldAutoPlan = forceRegeneratePlan
+                || plan is null
+                || plan.Items == null
+                || plan.Items.Count == 0
+                || ContainsLegacyAutoPlanBlacklistedFoods(plan);
+
+            if (shouldAutoPlan)
+            {
+                var autoPlanResult = await _homeMealPlanService.GenerateAutomaticPlanAsync(monday, cancellationToken);
+                if (!autoPlanResult.Success)
+                {
+                    var errorMsg = autoPlanResult.Message ?? autoPlanResult.Errors.FirstOrDefault() ?? "Falha ao gerar o plano semanal automaticamente.";
+                    return Result<ShoppingListModel>.Fail(errorMsg);
+                }
+
+                plan = await _unitOfWork.HomeMealPlan.GetByWeekStartDateAsync(monday, cancellationToken);
+                if (plan is null || plan.Items == null || plan.Items.Count == 0)
+                {
+                    return Result<ShoppingListModel>.Fail("Não foi possível gerar itens para o plano semanal.");
+                }
+            }
+
             if (plan is null || plan.Items == null || plan.Items.Count == 0)
             {
                 return Result<ShoppingListModel>.Fail("Nenhuma refeição planejada encontrada para a semana informada.");
@@ -192,6 +220,36 @@ public class ShoppingListService : IShoppingListService
             _unitOfWork.Rollback();
             return Result<bool>.Fail("Ocorreu um erro interno ao deletar a lista de compras.");
         }
+    }
+
+    private static bool ContainsLegacyAutoPlanBlacklistedFoods(HomeMealPlanEntity plan)
+    {
+        if (plan?.Items == null) return false;
+        return plan.Items.Any(item =>
+            item.MealTemplate != null &&
+            (item.MealTemplate.Name.Contains("Padrão", StringComparison.OrdinalIgnoreCase) ||
+             item.MealTemplate.Name.Contains("Completo", StringComparison.OrdinalIgnoreCase) ||
+             item.MealTemplate.Name.Contains("Shake", StringComparison.OrdinalIgnoreCase) ||
+             item.MealTemplate.Name.Contains("Hipercalórico", StringComparison.OrdinalIgnoreCase)) &&
+            item.MealTemplate.Items != null &&
+            item.MealTemplate.Items.Any(ti => IsBlacklistedFood(ti.Food?.Name)));
+    }
+
+    private static bool IsBlacklistedFood(string? foodName)
+    {
+        if (string.IsNullOrWhiteSpace(foodName)) return false;
+        var lower = foodName.ToLowerInvariant();
+        return lower.Contains("arroz")
+            || lower.Contains("feijão")
+            || lower.Contains("feijao")
+            || lower.Contains("frango")
+            || lower.Contains("azeite")
+            || lower.Contains("whey")
+            || lower.Contains("suplement")
+            || lower.Contains("hipercalor")
+            || lower.Contains("creatina")
+            || lower.Contains("proteína")
+            || lower.Contains("proteina");
     }
 }
 

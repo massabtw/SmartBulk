@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState, useCallback, useRef } from "react";
 import { PageHeader } from "@/components/PageHeader";
 import { Card } from "@/components/Card";
 import { TemplateFormModal } from "@/components/TemplateFormModal";
@@ -41,8 +41,11 @@ export default function MealPlanPage() {
   const [plan, setPlan] = useState<HomeMealPlanModel | null>(null);
   const [loading, setLoading] = useState(true);
   const [savingPlan, setSavingPlan] = useState(false);
+  const [generatingAuto, setGeneratingAuto] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [dirty, setDirty] = useState(false);
+
+  const planCache = useRef<Map<string, HomeMealPlanModel>>(new Map());
 
   const [templateModalOpen, setTemplateModalOpen] = useState(false);
   const [slotPicker, setSlotPicker] = useState<{ isOpen: boolean; dateStr: string; mealSlot: string }>({
@@ -53,8 +56,28 @@ export default function MealPlanPage() {
 
   const [draft, setDraft] = useState<Draft>({});
 
-  const loadData = useCallback(async () => {
-    setLoading(true);
+  const applyPlanToState = (loadedPlan: HomeMealPlanModel) => {
+    setPlan(loadedPlan);
+    const next: Draft = {};
+    loadedPlan.days?.forEach((day) => {
+      next[day.date] = {};
+      day.items?.forEach((item) => {
+        next[day.date][item.mealSlot] = item.mealTemplateUuid;
+      });
+    });
+    setDraft(next);
+  };
+
+  const loadData = useCallback(async (isSilent = false) => {
+    if (!isSilent) {
+      const cached = planCache.current.get(weekMonday);
+      if (cached) {
+        applyPlanToState(cached);
+        setLoading(false);
+      } else {
+        setLoading(true);
+      }
+    }
     setError(null);
 
     const [templatesRes, planRes] = await Promise.all([
@@ -66,19 +89,14 @@ export default function MealPlanPage() {
     setTemplates(templatesRes.data ?? []);
 
     if (planRes.error || !planRes.data) {
-      setPlan(null);
-      setDraft({});
+      if (!planCache.current.has(weekMonday)) {
+        setPlan(null);
+        setDraft({});
+      }
       if (planRes.error) setError(planRes.error);
     } else {
-      setPlan(planRes.data);
-      const next: Draft = {};
-      planRes.data.days?.forEach((day) => {
-        next[day.date] = {};
-        day.items?.forEach((item) => {
-          next[day.date][item.mealSlot] = item.mealTemplateUuid;
-        });
-      });
-      setDraft(next);
+      planCache.current.set(weekMonday, planRes.data);
+      applyPlanToState(planRes.data);
     }
 
     setDirty(false);
@@ -109,6 +127,30 @@ export default function MealPlanPage() {
     setDirty(true);
   };
 
+  const handleGenerateAutomaticPlan = async () => {
+    if (dirty && !window.confirm("Há alterações não salvas. Deseja sobrescrever gerando o plano automático da semana?")) {
+      return;
+    }
+    setGeneratingAuto(true);
+    setError(null);
+
+    const res = await bffSend<HomeMealPlanModel>("POST", `homemealplan/generate-week?weekStartDate=${weekMonday}`, {});
+    setGeneratingAuto(false);
+
+    if (res.error) {
+      setError(res.error);
+      return;
+    }
+
+    if (res.data) {
+      planCache.current.set(weekMonday, res.data);
+      applyPlanToState(res.data);
+      setDirty(false);
+    } else {
+      await loadData();
+    }
+  };
+
   const handleSavePlan = async () => {
     setSavingPlan(true);
     setError(null);
@@ -126,7 +168,7 @@ export default function MealPlanPage() {
       setError(res.error);
       return;
     }
-    await loadData();
+    await loadData(true);
   };
 
   const handleDeleteTemplate = async (uuid: string) => {
@@ -148,18 +190,29 @@ export default function MealPlanPage() {
         subtitle={`Semana de ${weekMonday}`}
         action={
           activeTab === "plan" ? (
-            <button
-              onClick={handleSavePlan}
-              disabled={savingPlan || !dirty}
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-brand-600 hover:bg-brand-500 text-white font-semibold text-xs transition-colors shadow-sm disabled:opacity-50"
-            >
-              {savingPlan ? <RefreshCw size={14} className="animate-spin" /> : <Save size={14} />}
-              <span>Salvar plano</span>
-            </button>
+            <div className="flex items-center gap-2 flex-wrap">
+              <button
+                onClick={handleGenerateAutomaticPlan}
+                disabled={generatingAuto || savingPlan}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-amber-500/15 hover:bg-amber-500/25 text-amber-300 border border-amber-500/30 font-semibold text-xs transition-colors shadow-sm disabled:opacity-50 min-h-[36px]"
+                title="Gera o plano da semana considerando os dias com e sem refeitório"
+              >
+                {generatingAuto ? <RefreshCw size={14} className="animate-spin" /> : <span>⚡</span>}
+                <span>Gerar plano automático</span>
+              </button>
+              <button
+                onClick={handleSavePlan}
+                disabled={savingPlan || !dirty || generatingAuto}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-brand-600 hover:bg-brand-500 text-white font-semibold text-xs transition-colors shadow-sm disabled:opacity-50 min-h-[36px]"
+              >
+                {savingPlan ? <RefreshCw size={14} className="animate-spin" /> : <Save size={14} />}
+                <span>Salvar plano</span>
+              </button>
+            </div>
           ) : (
             <button
               onClick={() => setTemplateModalOpen(true)}
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-brand-600 hover:bg-brand-500 text-white font-semibold text-xs transition-colors shadow-sm"
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-brand-600 hover:bg-brand-500 text-white font-semibold text-xs transition-colors shadow-sm min-h-[36px]"
             >
               <Plus size={14} />
               <span>Novo template</span>
@@ -173,7 +226,7 @@ export default function MealPlanPage() {
           role="tab"
           aria-selected={activeTab === "plan"}
           onClick={() => setActiveTab("plan")}
-          className={`py-2 rounded-xl flex items-center justify-center gap-2 transition-all ${
+          className={`py-2 rounded-xl flex items-center justify-center gap-2 transition-colors duration-150 min-h-[40px] ${
             activeTab === "plan"
               ? "bg-brand-500/15 border border-brand-500/30 text-brand-400"
               : "text-zinc-400 hover:text-zinc-200"
@@ -186,7 +239,7 @@ export default function MealPlanPage() {
           role="tab"
           aria-selected={activeTab === "templates"}
           onClick={() => setActiveTab("templates")}
-          className={`py-2 rounded-xl flex items-center justify-center gap-2 transition-all ${
+          className={`py-2 rounded-xl flex items-center justify-center gap-2 transition-colors duration-150 min-h-[40px] ${
             activeTab === "templates"
               ? "bg-brand-500/15 border border-brand-500/30 text-brand-400"
               : "text-zinc-400 hover:text-zinc-200"
@@ -212,7 +265,7 @@ export default function MealPlanPage() {
           <div className="flex items-center justify-between px-3 py-1.5 bg-surface-card border border-border/80 rounded-xl text-xs">
             <button
               onClick={() => changeWeek(-1)}
-              className="p-1 rounded-lg text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800 transition-colors flex items-center gap-1"
+              className="px-2 py-1 rounded-lg text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800 transition-colors flex items-center gap-1 min-h-[36px]"
             >
               <ChevronLeft size={16} />
               <span>Anterior</span>
@@ -220,7 +273,7 @@ export default function MealPlanPage() {
             <span className="font-semibold text-zinc-200">Seg {weekMonday.slice(5)}</span>
             <button
               onClick={() => changeWeek(1)}
-              className="p-1 rounded-lg text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800 transition-colors flex items-center gap-1"
+              className="px-2 py-1 rounded-lg text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800 transition-colors flex items-center gap-1 min-h-[36px]"
             >
               <span>Próxima</span>
               <ChevronRight size={16} />

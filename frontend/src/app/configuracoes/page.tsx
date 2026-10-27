@@ -198,7 +198,7 @@ export default function SettingsPage() {
                     calorieTargetKcal: parseInt(e.target.value) || 0,
                   })
                 }
-                className="w-full bg-zinc-950 border border-zinc-800 rounded-xl px-3 py-2 text-xs text-zinc-100 font-mono focus:outline-none focus:border-brand-500"
+                className="w-full bg-zinc-950 border border-zinc-800 rounded-xl px-3 py-2.5 min-h-[44px] text-xs text-zinc-100 font-mono focus:outline-none focus:border-brand-500"
               />
               <span className="text-[10px] text-zinc-500 mt-1 block">
                 Valor recomendado para superávit calórico: ~3000 kcal/dia.
@@ -221,7 +221,7 @@ export default function SettingsPage() {
                     proteinTargetGPerKg: parseFloat(e.target.value) || 0,
                   })
                 }
-                className="w-full bg-zinc-950 border border-zinc-800 rounded-xl px-3 py-2 text-xs text-zinc-100 font-mono focus:outline-none focus:border-brand-500"
+                className="w-full bg-zinc-950 border border-zinc-800 rounded-xl px-3 py-2.5 min-h-[44px] text-xs text-zinc-100 font-mono focus:outline-none focus:border-brand-500"
               />
               <span className="text-[10px] text-zinc-500 mt-1 block">
                 Padrão científico para hipertrofia: 2,0 g por kg de peso corporal.
@@ -248,7 +248,7 @@ export default function SettingsPage() {
                 onChange={(e) =>
                   setSettings({ ...settings, timeZoneId: e.target.value })
                 }
-                className="w-full bg-zinc-950 border border-zinc-800 rounded-xl px-3 py-2 text-xs text-zinc-100 focus:outline-none focus:border-brand-500"
+                className="w-full bg-zinc-950 border border-zinc-800 rounded-xl px-3 py-2.5 min-h-[44px] text-xs text-zinc-100 focus:outline-none focus:border-brand-500"
               >
                 <option value="America/Sao_Paulo">Brasília / São Paulo (UTC-3)</option>
                 <option value="America/Manaus">Manaus (UTC-4)</option>
@@ -270,7 +270,7 @@ export default function SettingsPage() {
                   onChange={(e) =>
                     setSettings({ ...settings, lunchReminderTime: e.target.value })
                   }
-                  className="w-full bg-zinc-950 border border-zinc-800 rounded-xl px-3 py-2 text-xs text-zinc-100 font-mono focus:outline-none focus:border-brand-500"
+                  className="w-full bg-zinc-950 border border-zinc-800 rounded-xl px-3 py-2.5 min-h-[44px] text-xs text-zinc-100 font-mono focus:outline-none focus:border-brand-500"
                 />
               </div>
 
@@ -284,7 +284,7 @@ export default function SettingsPage() {
                   onChange={(e) =>
                     setSettings({ ...settings, dinnerReminderTime: e.target.value })
                   }
-                  className="w-full bg-zinc-950 border border-zinc-800 rounded-xl px-3 py-2 text-xs text-zinc-100 font-mono focus:outline-none focus:border-brand-500"
+                  className="w-full bg-zinc-950 border border-zinc-800 rounded-xl px-3 py-2.5 min-h-[44px] text-xs text-zinc-100 font-mono focus:outline-none focus:border-brand-500"
                 />
               </div>
             </div>
@@ -297,7 +297,7 @@ export default function SettingsPage() {
           <button
             type="submit"
             disabled={saving}
-            className="w-full py-3.5 rounded-xl bg-brand-600 hover:bg-brand-500 text-white font-bold text-xs transition-colors flex items-center justify-center gap-2 shadow-lg shadow-brand-500/10 disabled:opacity-50"
+            className="w-full py-3.5 min-h-[48px] rounded-xl bg-brand-600 hover:bg-brand-500 text-white font-bold text-xs transition-colors flex items-center justify-center gap-2 shadow-lg shadow-brand-500/10 disabled:opacity-50"
           >
             {saving ? (
               <>

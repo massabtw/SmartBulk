@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState, useCallback, useRef } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { PageHeader } from "@/components/PageHeader";
 import { Card } from "@/components/Card";
@@ -16,6 +16,40 @@ function formatGrams(grams: number) {
   return `${Math.round(grams)} g`;
 }
 
+function formatMarketPractical(foodName: string, grams: number): string {
+  const lower = foodName.toLowerCase();
+  if (lower.includes("leite")) {
+    const liters = (grams / 1000).toFixed(1).replace(/\.0$/, "");
+    const boxes = Math.ceil(grams / 1000);
+    return `~${liters} L (${boxes} caixa${boxes > 1 ? "s" : ""})`;
+  }
+  if (lower.includes("banana")) {
+    const units = Math.round(grams / 70);
+    return `${formatGrams(grams)} (~${units} banana${units > 1 ? "s" : ""})`;
+  }
+  if (lower.includes("ovo")) {
+    const units = Math.round(grams / 50);
+    return `${formatGrams(grams)} (~${units} ovo${units > 1 ? "s" : ""})`;
+  }
+  if (lower.includes("pão") || lower.includes("pao")) {
+    const packs = Math.ceil(grams / 450);
+    return `${formatGrams(grams)} (~${packs} pacote${packs > 1 ? "s" : ""})`;
+  }
+  if (lower.includes("pasta de amendoim")) {
+    const jars = Math.ceil(grams / 350);
+    return `${formatGrams(grams)} (~${jars} pote${jars > 1 ? "s" : ""})`;
+  }
+  if (lower.includes("aveia")) {
+    const packs = Math.ceil(grams / 500);
+    return `${formatGrams(grams)} (~${packs} pacote${packs > 1 ? "s" : ""})`;
+  }
+  if (lower.includes("queijo") || lower.includes("muçarela") || lower.includes("mucarela")) {
+    const slices = Math.round(grams / 25);
+    return `${formatGrams(grams)} (~${slices} fatias)`;
+  }
+  return formatGrams(grams);
+}
+
 export default function ShoppingListPage() {
   // A lista é sempre da PRÓXIMA semana por padrão (compra-se antes de a semana começar).
   const [weekMonday, setWeekMonday] = useState<string>(() => nextMondayISO());
@@ -24,15 +58,28 @@ export default function ShoppingListPage() {
   const [generating, setGenerating] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const loadShoppingList = useCallback(async () => {
-    setLoading(true);
+  const listCache = useRef<Map<string, ShoppingListModel | null>>(new Map());
+
+  const loadShoppingList = useCallback(async (isSilent = false) => {
+    if (!isSilent) {
+      if (listCache.current.has(weekMonday)) {
+        setShoppingList(listCache.current.get(weekMonday) ?? null);
+        setLoading(false);
+      } else {
+        setLoading(true);
+      }
+    }
     setError(null);
+
     const res = await bffGet<ShoppingListModel>(`shoppinglist?weekStartDate=${weekMonday}`);
     if (res.error) {
-      setShoppingList(null);
+      if (!listCache.current.has(weekMonday)) {
+        setShoppingList(null);
+      }
       setError(res.error);
     } else {
       // 204 (sem lista ainda) chega como data null.
+      listCache.current.set(weekMonday, res.data);
       setShoppingList(res.data);
     }
     setLoading(false);
@@ -47,6 +94,7 @@ export default function ShoppingListPage() {
     setError(null);
     const res = await bffSend<ShoppingListModel>("POST", "shoppinglist/generate", {
       weekStartDate: weekMonday,
+      forceRegeneratePlan: true,
     });
     setGenerating(false);
 
@@ -54,6 +102,7 @@ export default function ShoppingListPage() {
       setError(res.error ?? "Não foi possível gerar a lista.");
       return;
     }
+    listCache.current.set(weekMonday, res.data);
     setShoppingList(res.data);
   };
 
@@ -64,7 +113,9 @@ export default function ShoppingListPage() {
       if (!prev) return prev;
       const items = prev.items.map((i) => (i.uuid === item.uuid ? { ...i, isPurchased: nextPurchased } : i));
       const purchased = items.filter((i) => i.isPurchased).length;
-      return { ...prev, items, purchasedItems: purchased, isAllPurchased: purchased === items.length };
+      const updated = { ...prev, items, purchasedItems: purchased, isAllPurchased: purchased === items.length };
+      listCache.current.set(weekMonday, updated);
+      return updated;
     });
 
     const res = await bffSend<ShoppingListItemModel>("PUT", `shoppinglist/items/${item.uuid}/toggle`, {
@@ -73,7 +124,7 @@ export default function ShoppingListPage() {
 
     if (res.error) {
       setError(res.error);
-      loadShoppingList();
+      loadShoppingList(true);
     }
   };
 
@@ -90,7 +141,7 @@ export default function ShoppingListPage() {
           <button
             onClick={handleGenerate}
             disabled={generating}
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-brand-600 hover:bg-brand-500 text-white font-semibold text-xs transition-colors shadow-sm disabled:opacity-50"
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-brand-600 hover:bg-brand-500 text-white font-semibold text-xs transition-colors shadow-sm disabled:opacity-50 min-h-[36px]"
           >
             {generating ? <RefreshCw size={14} className="animate-spin" /> : <Sparkles size={14} />}
             <span>{shoppingList ? "Gerar de novo" : "Gerar lista"}</span>
@@ -101,7 +152,7 @@ export default function ShoppingListPage() {
       <div className="flex items-center justify-between px-3 py-1.5 bg-surface-card border border-border/80 rounded-xl text-xs">
         <button
           onClick={() => setWeekMonday(addDaysISO(weekMonday, -7))}
-          className="p-1 rounded-lg text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800 transition-colors flex items-center gap-1"
+          className="px-2 py-1 rounded-lg text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800 transition-colors flex items-center gap-1 min-h-[36px]"
         >
           <ChevronLeft size={16} />
           <span>Anterior</span>
@@ -109,7 +160,7 @@ export default function ShoppingListPage() {
         <span className="font-semibold text-zinc-200">Seg {weekMonday.slice(5)}</span>
         <button
           onClick={() => setWeekMonday(addDaysISO(weekMonday, 7))}
-          className="p-1 rounded-lg text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800 transition-colors flex items-center gap-1"
+          className="px-2 py-1 rounded-lg text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800 transition-colors flex items-center gap-1 min-h-[36px]"
         >
           <span>Próxima</span>
           <ChevronRight size={16} />
@@ -177,7 +228,7 @@ export default function ShoppingListPage() {
                     role="checkbox"
                     aria-checked={item.isPurchased}
                     onClick={() => handleToggleItem(item)}
-                    className={`w-full text-left rounded-2xl border p-3.5 flex items-center gap-3 transition-all duration-200 ${
+                    className={`w-full text-left rounded-2xl border py-2.5 px-3.5 flex items-center gap-3 transition-colors duration-150 ${
                       item.isPurchased
                         ? "bg-zinc-950/40 border-zinc-900 opacity-60"
                         : "bg-surface-card hover:bg-surface-hover border-border"
@@ -193,7 +244,7 @@ export default function ShoppingListPage() {
                       <Check size={14} strokeWidth={3} />
                     </span>
 
-                    <span className="min-w-0">
+                    <span className="min-w-0 flex-1">
                       <span
                         className={`block text-xs font-semibold truncate transition-colors ${
                           item.isPurchased ? "text-zinc-500 line-through" : "text-zinc-200"
@@ -203,8 +254,7 @@ export default function ShoppingListPage() {
                       </span>
                       <span className="flex items-center gap-2 text-[11px] text-zinc-400 mt-0.5">
                         <span className={`font-mono font-bold ${item.isPurchased ? "text-zinc-500" : "text-brand-400"}`}>
-                          {formatGrams(item.rawGrams)}
-                          {hasConversion ? " cru" : ""}
+                          {formatMarketPractical(item.foodName, item.rawGrams)}
                         </span>
                         {hasConversion && (
                           <span className="text-[10px] text-zinc-500">

@@ -29,8 +29,8 @@ export function BottomNav() {
   const pathname = usePathname();
 
   return (
-    <nav className="fixed bottom-0 left-0 right-0 z-50 bg-background/85 backdrop-blur-xl border-t border-border/80 pb-safe">
-      <div className="max-w-md mx-auto px-4 h-16 flex items-center justify-around">
+    <nav className="fixed bottom-0 left-0 right-0 z-50 bg-zinc-950/95 border-t border-zinc-800/80 pb-safe">
+      <div className="max-w-lg mx-auto px-4 h-16 flex items-center justify-around">
         {navItems.map((item) => {
           const isActive =
             item.href === "/"
@@ -43,30 +43,27 @@ export function BottomNav() {
             <Link
               key={item.href}
               href={item.href}
-              className="relative flex flex-col items-center justify-center flex-1 h-full py-1 text-xs select-none"
+              className="relative flex flex-col items-center justify-center flex-1 h-full py-1 text-xs select-none min-h-[44px]"
             >
               <motion.div
-                whileTap={{ scale: 0.88 }}
+                whileTap={{ scale: 0.92 }}
                 transition={{ type: "spring", stiffness: 400, damping: 20 }}
-                className={`relative z-10 flex flex-col items-center gap-1 transition-colors duration-200 ${
+                className={`relative z-10 flex flex-col items-center gap-1 transition-colors duration-150 ${
                   isActive
-                    ? "text-brand-500 font-medium"
+                    ? "text-brand-400 font-semibold"
                     : "text-zinc-500 hover:text-zinc-300"
                 }`}
               >
                 <Icon
                   size={20}
-                  strokeWidth={isActive ? 2.3 : 1.8}
-                  className={isActive ? "drop-shadow-[0_0_8px_rgba(16,185,129,0.5)]" : ""}
+                  strokeWidth={isActive ? 2.4 : 1.8}
                 />
                 <span className="text-[10px] tracking-tight">{item.label}</span>
               </motion.div>
 
               {isActive && (
-                <motion.div
-                  layoutId="bottomNavIndicator"
-                  className="absolute inset-x-2 inset-y-1 bg-brand-500/10 border border-brand-500/20 rounded-2xl"
-                  transition={{ type: "spring", stiffness: 380, damping: 30 }}
+                <div
+                  className="absolute inset-x-2 inset-y-1 bg-brand-500/10 border border-brand-500/20 rounded-2xl pointer-events-none"
                 />
               )}
             </Link>

@@ -38,7 +38,7 @@ export default function RootLayout({
       <body
         className={`${geistSans.variable} ${geistMono.variable} antialiased bg-background text-zinc-100 min-h-screen flex flex-col selection:bg-brand-500/30 selection:text-brand-100`}
       >
-        <div className="flex-1 max-w-md w-full mx-auto pb-20 relative flex flex-col">
+        <div className="flex-1 max-w-lg w-full mx-auto pb-20 relative flex flex-col px-3 sm:px-4">
           {children}
         </div>
         <BottomNav />

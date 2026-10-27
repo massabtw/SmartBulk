@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState, useCallback, useRef } from "react";
 import { PageHeader } from "@/components/PageHeader";
 import { Card } from "@/components/Card";
 import { MacroProgressBar } from "@/components/MacroProgressBar";
@@ -31,12 +31,32 @@ export default function TodayPage() {
   const [latestWeight, setLatestWeight] = useState<number | null>(null);
   const [creatineTaken, setCreatineTaken] = useState(false);
 
+  interface DayCacheItem {
+    gap: DailyGapModel;
+    shake: ShakeAdjustmentModel | null;
+    shakeMsg: string | null;
+    creatine: boolean;
+  }
+  const dayCache = useRef<Map<string, DayCacheItem>>(new Map());
+
   const isToday = dateStr === todayISO();
 
   const loadData = useCallback(
     async (isBackground = false) => {
-      if (!isBackground) setLoading(true);
-      else setRefreshing(true);
+      const cached = dayCache.current.get(dateStr);
+      if (cached && !isBackground) {
+        setGapData(cached.gap);
+        setShakeData(cached.shake);
+        setShakeMessage(cached.shakeMsg);
+        setCreatineTaken(cached.creatine);
+        setLoading(false);
+        setRefreshing(true);
+      } else if (!isBackground && !dayCache.current.has(dateStr)) {
+        setLoading(true);
+      } else {
+        setRefreshing(true);
+      }
+
       setError(null);
 
       const [gapRes, shakeRes, weightRes, creatineRes] = await Promise.all([
@@ -47,10 +67,16 @@ export default function TodayPage() {
       ]);
 
       if (gapRes.error || !gapRes.data) {
-        setGapData(null);
+        if (!cached) setGapData(null);
         setError(gapRes.error ?? "Não foi possível carregar o dia.");
       } else {
         setGapData(gapRes.data);
+        dayCache.current.set(dateStr, {
+          gap: gapRes.data,
+          shake: shakeRes.data,
+          shakeMsg: shakeRes.error,
+          creatine: creatineRes.data?.taken ?? false,
+        });
       }
 
       // Shake: erro aqui não derruba a tela (ex.: ainda não há template de shake).
@@ -130,7 +156,7 @@ export default function TodayPage() {
       <div className="flex items-center justify-between px-2 py-1 bg-surface-card border border-border/80 rounded-xl text-xs">
         <button
           onClick={() => setDateStr(addDaysISO(dateStr, -1))}
-          className="p-1 rounded-lg text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800 transition-colors flex items-center gap-1"
+          className="px-2 py-1 rounded-lg text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800 transition-colors flex items-center gap-1 min-h-[36px]"
         >
           <ChevronLeft size={16} />
           <span>Anterior</span>
@@ -138,7 +164,7 @@ export default function TodayPage() {
         <span className="font-semibold text-zinc-200">{dateStr}</span>
         <button
           onClick={() => setDateStr(addDaysISO(dateStr, 1))}
-          className="p-1 rounded-lg text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800 transition-colors flex items-center gap-1"
+          className="px-2 py-1 rounded-lg text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800 transition-colors flex items-center gap-1 min-h-[36px]"
         >
           <span>Próximo</span>
           <ChevronRight size={16} />

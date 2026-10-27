@@ -21,6 +21,18 @@ public class HomeMealPlanController : ControllerBase
         return result.Ok();
     }
 
+    [HttpPost("generate-week")]
+    public async Task<IActionResult> GenerateWeek(
+        [FromServices] IHomeMealPlanService service,
+        [FromQuery] DateOnly? weekStartDate,
+        [FromBody] ShoppingListGenerateModel? body,
+        CancellationToken cancellationToken)
+    {
+        var targetDate = weekStartDate ?? body?.WeekStartDate;
+        var result = await service.GenerateAutomaticPlanAsync(targetDate, cancellationToken);
+        return result.Ok();
+    }
+
     [HttpPost]
     public async Task<IActionResult> Upsert(
         [FromServices] IHomeMealPlanService service,
